@@ -80,7 +80,9 @@ function App() {
   const [profileOpen, setProfileOpen] = useState(false);
   const [profileForm, setProfileForm] = useState({ username: '', avatar: '', gallery: [] });
   const [loading, setLoading] = useState(false);
+  const [showSidebar, setShowSidebar] = useState(true);
   const bottomRef = useRef(null);
+  const messageInputRef = useRef(null);
 
   const activeChat = useMemo(() => {
     if (!activeChatId) return null;
@@ -204,6 +206,15 @@ function App() {
     setSelectedParticipants((prev) => prev.includes(userId) ? prev.filter((id) => id !== userId) : [...prev, userId]);
   };
 
+  function goToChat(chatId) {
+    setActiveChatId(String(chatId));
+    setShowSidebar(false);
+  }
+
+  function goBack() {
+    setShowSidebar(true);
+  }
+
   async function uploadFile(file) {
     if (!file) return null;
     const formData = new FormData();
@@ -264,7 +275,7 @@ function App() {
       };
       const chat = await apiFetch('/chats', { method: 'POST', body: JSON.stringify(payload) }, token);
       setChats((prev) => [chat, ...prev]);
-      setActiveChatId(String(chat.id));
+      goToChat(chat.id);
       setMessagesMap((prev) => ({ ...prev, [chat.id]: [] }));
       setSelectedParticipants([]);
     } catch (error) {
@@ -282,7 +293,7 @@ function App() {
       chat.participants.includes(Number(userId))
     );
     if (duplicate) {
-      setActiveChatId(String(duplicate.id));
+      goToChat(duplicate.id);
       return;
     }
     await createChatWithUsers([Number(userId)]);
@@ -468,7 +479,7 @@ function App() {
 
   return (
     <div className="app-layout">
-      <aside className="sidebar">
+      <aside className={`sidebar ${showSidebar ? '' : 'hidden'}`}>
         <div className="sidebar-header">
           <div>
             <span className="eyebrow">Мессенджер</span>
@@ -508,7 +519,7 @@ function App() {
           {filteredChats.length ? filteredChats.map((chat) => {
             const chatMessages = chat.messages || messagesMap[chat.id] || [];
             return (
-              <button key={chat.id} className={`chat-item ${String(chat.id) === String(activeChatId) ? 'active' : ''}`} onClick={() => setActiveChatId(String(chat.id))}>
+              <button key={chat.id} className={`chat-item ${String(chat.id) === String(activeChatId) ? 'active' : ''}`} onClick={() => goToChat(chat.id)}>
                 <div className="chat-item-main">
                   <div className="chat-name">
                     {getChatTitle(chat)}
@@ -551,11 +562,12 @@ function App() {
         <button className="secondary-btn logout-btn" onClick={handleLogout}>Выйти</button>
       </aside>
 
-      <main className="content">
+      <main className={`content ${!showSidebar ? 'visible' : ''}`}>
         {activeChat ? (
           <>
             <div className="chat-topbar">
-              <div>
+              <button className="back-btn" type="button" onClick={goBack}>←</button>
+              <div style={{display:'flex', alignItems:'center', gap:'12px'}}>
                 <h3>{getChatTitle(activeChat)}</h3>
                 <small>{(messagesMap[activeChat.id] || []).length} сообщений</small>
               </div>
@@ -604,13 +616,20 @@ function App() {
             </div>
 
             <form onSubmit={handleSendMessage} className="composer">
-              <input name="message" type="text" placeholder="Напишите сообщение..." autoComplete="off" />
-              <input name="attachment" type="file" className="file-attach" />
-              <button type="submit" className="primary-btn">Отправить</button>
+              <label className="file-attach">
+                <span>📎</span>
+                <input name="attachment" type="file" />
+              </label>
+              <input ref={messageInputRef} name="message" type="text" placeholder="Написать сообщение..." autoComplete="off" />
+              <button type="submit" className="primary-btn">➤</button>
             </form>
           </>
         ) : (
-          <div className="empty-state large">Создайте чат, чтобы начать общение</div>
+          <div className="empty-state large">
+            <button className="menu-btn primary-btn" type="button" onClick={goBack} style={{position:'absolute', top:'12px', left:'12px', width:'44px', height:'44px', borderRadiu
+s:'50%', padding:0, fontSize:'1.2rem'}}>☰</button>
+            Создайте чат, чтобы начать общение
+          </div>
         )}
       </main>
 
