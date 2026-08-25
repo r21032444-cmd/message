@@ -35,7 +35,7 @@ backend/src/data.json
 backend/src/uploads/
 
 # Frontend specific
-frontend/dist/
+!frontend/dist/
 
 # OS
 Thumbs.db
