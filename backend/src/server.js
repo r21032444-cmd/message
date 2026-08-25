@@ -20,14 +20,15 @@ app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
 // Serve frontend static files
-const projectRoot = path.join(__dirname, '..');
+const projectRoot = path.join(__dirname, '../..');
 const frontendRoot = path.join(projectRoot, 'frontend');
 const frontendDist = path.join(frontendRoot, 'dist');
 const frontendPath = fs.existsSync(frontendDist) ? frontendDist : frontendRoot;
+console.log('Frontend path:', frontendPath, 'exists:', fs.existsSync(frontendPath));
 app.use(express.static(frontendPath));
 
 // serve uploads
-const uploadDir = path.join(process.cwd(), 'uploads');
+const uploadDir = path.join(__dirname, '../uploads');
 fs.mkdirSync(uploadDir, { recursive: true });
 app.use('/uploads', express.static(uploadDir));
 const upload = multer({ dest: uploadDir });
