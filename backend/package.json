@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "start": "npm --prefix ../frontend install && npm --prefix ../frontend run build && node src/server.js"
+    "start": "cd ../frontend && npm install && npm run build && cd ../backend && node src/server.js"
   },
   "dependencies": {
     "express": "^4.18.2",
