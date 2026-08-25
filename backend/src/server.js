@@ -101,7 +101,8 @@ app.get('/users', authMiddleware, (req, res) => {
 app.post('/upload', upload.single('file'), (req, res) => {
   if (!req.file) return res.status(400).send('No file');
   // return accessible URL
-  const url = `${req.protocol}://${req.get('host')}/uploads/${req.file.filename}`;
+  const protocol = req.get('X-Forwarded-Proto') || req.protocol;
+  const url = `${protocol}://${req.get('host')}/uploads/${req.file.filename}`;
   res.json({ url, mime: req.file.mimetype, filename: req.file.originalname });
 });
 

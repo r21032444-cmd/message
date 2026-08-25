@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { io } from 'socket.io-client';
 
 const THEME_KEY = 'clock-message-theme';
 const TOKEN_KEY = 'clock-message-token';
@@ -72,6 +73,7 @@ function App() {
   });
   const [users, setUsers] = useState([]);
   const [userSearchQuery, setUserSearchQuery] = useState('');
+  const [showUserSearch, setShowUserSearch] = useState(false);
   const [chats, setChats] = useState([]);
   const [activeChatId, setActiveChatId] = useState(null);
   const [messagesMap, setMessagesMap] = useState({});
@@ -81,8 +83,12 @@ function App() {
   const [profileForm, setProfileForm] = useState({ username: '', avatar: '', gallery: [] });
   const [loading, setLoading] = useState(false);
   const [showSidebar, setShowSidebar] = useState(true);
+  const [syncStatus, setSyncStatus] = useState('ready');
+  const [toasts, setToasts] = useState([]);
   const bottomRef = useRef(null);
   const messageInputRef = useRef(null);
+  const socketRef = useRef(null);
+  const syncTimerRef = useRef(null);
 
   const activeChat = useMemo(() => {
     if (!activeChatId) return null;
@@ -102,9 +108,27 @@ function App() {
 
   const visibleUsers = useMemo(() => {
     const value = userSearchQuery.trim().toLowerCase();
-    if (!value) return users;
+    if (!value) return users.slice(0, 20);
     return users.filter((user) => user.username.toLowerCase().includes(value));
   }, [users, userSearchQuery]);
+
+  const onlineCount = useMemo(() => users.filter((u) => u.online).length, [users]);
+
+  function addToast(message, type = 'info') {
+    const id = Date.now() + Math.random();
+    setToasts((prev) => [...prev, { id, message, type }]);
+    setTimeout(() => {
+      setToasts((prev) => prev.filter((t) => t.id !== id));
+    }, 3000);
+  }
+
+  function updateSyncStatus(status) {
+    setSyncStatus(status);
+    if (status === 'syncing') {
+      if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
+      syncTimerRef.current = setTimeout(() => setSyncStatus('ready'), 2000);
+    }
+  }
 
   useEffect(() => {
     document.body.dataset.theme = theme;
@@ -123,10 +147,13 @@ function App() {
     if (!token || !currentUser) return;
     const loadMe = async () => {
       try {
+        updateSyncStatus('syncing');
         const me = await apiFetch('/me', { method: 'GET' }, token);
         setCurrentUser(me);
+        updateSyncStatus('ready');
       } catch (error) {
         console.error(error);
+        updateSyncStatus('error');
       }
     };
     loadMe();
@@ -136,11 +163,14 @@ function App() {
     if (!token || !currentUser) return;
     const loadUsers = async () => {
       try {
+        updateSyncStatus('syncing');
         const query = userSearchQuery.trim() ? `?search=${encodeURIComponent(userSearchQuery.trim())}` : '';
         const data = await apiFetch(`/users${query}`, { method: 'GET' }, token);
         setUsers(data || []);
+        updateSyncStatus('ready');
       } catch (error) {
         console.error(error);
+        updateSyncStatus('error');
       }
     };
     const loadChats = async () => {
@@ -202,6 +232,124 @@ function App() {
     }
   }, [messagesMap, activeChatId, currentUser, token]);
 
+  useEffect(() => {
+    if (!token || !currentUser) return;
+
+    const handleStorage = (event) => {
+      if (event.key === USER_KEY && event.newValue) {
+        try {
+          const parsed = JSON.parse(event.newValue);
+          if (parsed?.id === currentUser.id) {
+            setCurrentUser(parsed);
+            addToast('Данные профиля обновлены в другом окне', 'info');
+          }
+        } catch {}
+      }
+      if (event.key === 'clock-message-chats' && event.newValue) {
+        try {
+          const parsed = JSON.parse(event.newValue);
+          setChats(parsed);
+        } catch {}
+      }
+    };
+
+    const handleOnline = () => addToast('Подключение восстановлено', 'success');
+    const handleOffline = () => addToast('Нет подключения к сети', 'error');
+
+    window.addEventListener('storage', handleStorage);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    return () => {
+      window.removeEventListener('storage', handleStorage);
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, [token, currentUser]);
+
+  useEffect(() => {
+    if (!token || !currentUser) return;
+    
+    const wsUrl = API_BASE ? API_BASE.replace(/^http/, 'ws') : `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`;
+    
+    try {
+      const socket = io(wsUrl, {
+        auth: { token },
+        transports: ['websocket', 'polling']
+      });
+      socketRef.current = socket;
+
+      socket.on('connect', () => {
+        updateSyncStatus('ready');
+      });
+
+      socket.on('disconnect', () => {
+        updateSyncStatus('offline');
+      });
+
+      socket.on('message', ({ chatId, message }) => {
+        setMessagesMap((prev) => ({
+          ...prev,
+          [chatId]: [...(prev[chatId] || []), message]
+        }));
+        setChats((prev) => prev.map((chat) =>
+          String(chat.id) === String(chatId)
+            ? { ...chat, messages: [...(chat.messages || []), message] }
+            : chat
+        ));
+      });
+
+      socket.on('edit', ({ chatId, message }) => {
+        setMessagesMap((prev) => ({
+          ...prev,
+          [chatId]: (prev[chatId] || []).map((msg) => String(msg.id) === String(message.id) ? message : msg)
+        }));
+        setChats((prev) => prev.map((chat) =>
+          String(chat.id) === String(chatId)
+            ? { ...chat, messages: (chat.messages || []).map((msg) => String(msg.id) === String(message.id) ? message : msg) }
+            : chat
+        ));
+      });
+
+      socket.on('delete', ({ chatId, messageId }) => {
+        setMessagesMap((prev) => ({
+          ...prev,
+          [chatId]: (prev[chatId] || []).filter((msg) => String(msg.id) !== String(messageId))
+        }));
+        setChats((prev) => prev.map((chat) =>
+          String(chat.id) === String(chatId)
+            ? { ...chat, messages: (chat.messages || []).filter((msg) => String(msg.id) !== String(messageId)) }
+            : chat
+        ));
+      });
+
+      socket.on('read', ({ chatId, messageIds, by }) => {
+        setMessagesMap((prev) => ({
+          ...prev,
+          [chatId]: (prev[chatId] || []).map((msg) =>
+            messageIds.includes(String(msg.id)) ? { ...msg, read: true, readBy: [...(msg.readBy || []), by] } : msg
+          )
+        }));
+      });
+
+      socket.on('delivered', ({ chatId, messageIds }) => {
+        setMessagesMap((prev) => ({
+          ...prev,
+          [chatId]: (prev[chatId] || []).map((msg) =>
+            messageIds.includes(String(msg.id)) ? { ...msg, delivered: true } : msg
+          )
+        }));
+      });
+
+      return () => {
+        socket.disconnect();
+        socketRef.current = null;
+      };
+    } catch (error) {
+      console.error('Socket connection failed:', error);
+    }
+  }, [token, currentUser, API_BASE]);
+
   const toggleParticipant = (userId) => {
     setSelectedParticipants((prev) => prev.includes(userId) ? prev.filter((id) => id !== userId) : [...prev, userId]);
   };
@@ -209,6 +357,9 @@ function App() {
   function goToChat(chatId) {
     setActiveChatId(String(chatId));
     setShowSidebar(false);
+    if (socketRef.current) {
+      socketRef.current.emit('join', { chatId: String(chatId) });
+    }
   }
 
   function goBack() {
@@ -257,6 +408,7 @@ function App() {
       setAvatarFile(null);
       setSelectedParticipants([]);
       setActiveChatId(null);
+      addToast(authMode === 'register' ? 'Аккаунт создан!' : 'С возвращением!', 'success');
     } catch (error) {
       setAuthError(error.message || 'Ошибка авторизации');
     } finally {
@@ -278,6 +430,7 @@ function App() {
       goToChat(chat.id);
       setMessagesMap((prev) => ({ ...prev, [chat.id]: [] }));
       setSelectedParticipants([]);
+      addToast('Чат создан', 'success');
     } catch (error) {
       setAuthError(error.message || 'Не удалось создать чат');
     }
@@ -294,6 +447,7 @@ function App() {
     );
     if (duplicate) {
       goToChat(duplicate.id);
+      addToast('Чат уже существует', 'info');
       return;
     }
     await createChatWithUsers([Number(userId)]);
@@ -389,6 +543,10 @@ function App() {
   }
 
   function handleLogout() {
+    if (socketRef.current) {
+      socketRef.current.disconnect();
+      socketRef.current = null;
+    }
     setToken('');
     setCurrentUser(null);
     setUsers([]);
@@ -398,6 +556,7 @@ function App() {
     setSelectedParticipants([]);
     setAuthError('');
     setProfileOpen(false);
+    setShowSidebar(true);
   }
 
   async function saveProfile() {
@@ -413,6 +572,7 @@ function App() {
       setCurrentUser(updated);
       setProfileOpen(false);
       setAuthError('');
+      addToast('Профиль обновлён', 'success');
     } catch (error) {
       setAuthError(error.message || 'Не удалось сохранить профиль');
     } finally {
@@ -485,14 +645,22 @@ function App() {
             <span className="eyebrow">Мессенджер</span>
             <h2>Чаты</h2>
           </div>
-          <button className="theme-toggle" onClick={() => setTheme((prev) => (prev === 'light' ? 'dark' : 'light'))}>
-            {theme === 'light' ? '🌙' : '☀️'}
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            {onlineCount > 0 && (
+              <span className="online-count">
+                <span className="sync-dot" style={{ animation: 'none' }}></span>
+                {onlineCount} онлайн
+              </span>
+            )}
+            <button className="theme-toggle" onClick={() => setTheme((prev) => (prev === 'light' ? 'dark' : 'light'))}>
+              {theme === 'light' ? '🌙' : '☀️'}
+            </button>
+          </div>
         </div>
 
         <div className="user-card">
           <div className="avatar-large">
-            {currentUser.avatar ? <img src={currentUser.avatar} alt={currentUser.username} className="avatar-image" /> : currentUser.username.charAt(0).toUpperCase()}
+            {currentUser.avatar ? <img src={currentUser.avatar} alt={currentUser.username} className="avatar-image" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : currentUser.username.charAt(0).toUpperCase()}
           </div>
           <div>
             <strong>{currentUser.username}</strong>
@@ -512,7 +680,7 @@ function App() {
 
         <div className="toolbar-box">
           <input value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} type="text" placeholder="Поиск чатов" className="search-input" />
-          <button className="primary-btn" onClick={createGroupChat}>+ Новый чат</button>
+          <button className="primary-btn" onClick={createGroupChat}>+ Новый</button>
         </div>
 
         <div className="chat-list">
@@ -536,14 +704,37 @@ function App() {
           }) : <div className="empty-state compact">Чатов не найдено</div>}
         </div>
 
-        <div className="users-panel">
+        <div className="users-panel" style={{ position: 'relative' }}>
           <div className="panel-title">Пользователи</div>
-          <input value={userSearchQuery} onChange={(e) => setUserSearchQuery(e.target.value)} type="text" placeholder="Поиск пользователей" className="search-input small" />
-          {visibleUsers.map((user) => (
+          <input 
+            value={userSearchQuery} 
+            onChange={(e) => { setUserSearchQuery(e.target.value); setShowUserSearch(true); }} 
+            onFocus={() => setShowUserSearch(true)}
+            type="text" 
+            placeholder="Поиск пользователей..." 
+            className="search-input small" 
+            style={{ width: '100%', marginBottom: '10px' }}
+          />
+          {showUserSearch && userSearchQuery && visibleUsers.length > 0 && (
+            <div className="search-dropdown">
+              {visibleUsers.slice(0, 8).map((user) => (
+                <div key={user.id} className="search-dropdown-item" onClick={() => { createDirectChat(user.id); setShowUserSearch(false); }}>
+                  <span className="mini-avatar">
+                    {user.avatar ? <img src={user.avatar} alt={user.username} className="avatar-image small" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : user.username.charAt(0).toUpperCase()}
+                  </span>
+                  <div className="user-name-block">
+                    <span>{user.username}</span>
+                    <small>{getPresenceText(user)}</small>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          {!userSearchQuery && users.slice(0, 10).map((user) => (
             <div key={user.id} className={`user-row ${selectedParticipants.includes(user.id) ? 'selected' : ''}`}>
               <span className="presence-wrap">
                 <span className="mini-avatar">
-                  {user.avatar ? <img src={user.avatar} alt={user.username} className="avatar-image small" /> : user.username.charAt(0).toUpperCase()}
+                  {user.avatar ? <img src={user.avatar} alt={user.username} className="avatar-image small" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : user.username.charAt(0).toUpperCase()}
                 </span>
                 <span className={`online-indicator ${user.online ? 'online' : 'offline'}`} />
               </span>
@@ -557,6 +748,16 @@ function App() {
               </div>
             </div>
           ))}
+        </div>
+
+        <div style={{ padding: '0 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 'auto', paddingBottom: '12px' }}>
+          <span className={`sync-indicator ${syncStatus}`}>
+            <span className="sync-dot"></span>
+            {syncStatus === 'ready' && 'Синхронизировано'}
+            {syncStatus === 'syncing' && 'Синхронизация...'}
+            {syncStatus === 'offline' && 'Офлайн'}
+            {syncStatus === 'error' && 'Ошибка'}
+          </span>
         </div>
 
         <button className="secondary-btn logout-btn" onClick={handleLogout}>Выйти</button>
@@ -587,7 +788,7 @@ function App() {
                   </div>
                   <div className="message-text">
                     {message.text || 'Файл'}
-                    {message.attachment && <a href={message.attachment} target="_blank" rel="noreferrer" className="attachment-link">Открыть файл</a>}
+                    {message.attachment && <a href={message.attachment} target="_blank" rel="noreferrer" className="attachment-link">📎 Открыть файл</a>}
                   </div>
                   {message.from === currentUser.username && (
                     <div className="message-actions">
@@ -686,6 +887,17 @@ function App() {
           </div>
         </div>
       )}
+
+      <div className="toast-container">
+        {toasts.map((toast) => (
+          <div key={toast.id} className={`toast ${toast.type}`}>
+            {toast.type === 'success' && '✓'}
+            {toast.type === 'error' && '✕'}
+            {toast.type === 'info' && 'ℹ'}
+            {toast.message}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
