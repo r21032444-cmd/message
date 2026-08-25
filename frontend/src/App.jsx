@@ -44,12 +44,25 @@ function formatTime(timestamp) {
   return new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
+function formatChatStamp(timestamp) {
+  if (!timestamp) return 'Только что';
+  return new Date(timestamp).toLocaleString([], { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+}
+
+function getChatPreview(chat) {
+  if (!chat?.messages?.length) return 'Нет сообщений';
+  const lastMessage = chat.messages[chat.messages.length - 1];
+  const previewText = lastMessage.text ? lastMessage.text : 'Вложение';
+  return `${lastMessage.senderName}: ${previewText}`;
+}
+
 function App() {
   const [state, setState] = useState(() => loadState());
   const [authMode, setAuthMode] = useState('login');
   const [authError, setAuthError] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
@@ -60,11 +73,15 @@ function App() {
     [state]
   );
 
+  const filteredChats = useMemo(() => {
+    const value = searchQuery.trim().toLowerCase();
+    if (!value) return state.chats;
+    return state.chats.filter((chat) => chat.name.toLowerCase().includes(value));
+  }, [searchQuery, state.chats]);
+
   const activeChat = useMemo(() => {
     if (!state.chats.length) return null;
-    if (!state.activeChatId) {
-      return state.chats[0];
-    }
+    if (!state.activeChatId) return state.chats[0];
     return state.chats.find((chat) => chat.id === state.activeChatId) || state.chats[0];
   }, [state]);
 
@@ -229,12 +246,36 @@ function App() {
     }));
   }
 
+  function deleteChat(chatId) {
+    if (!chatId) return;
+    const chat = state.chats.find((item) => item.id === chatId);
+    if (!chat) return;
+
+    const confirmed = window.confirm(`Удалить чат "${chat.name}"?`);
+    if (!confirmed) return;
+
+    setState((prev) => {
+      const chats = prev.chats.filter((item) => item.id !== chatId);
+      return {
+        ...prev,
+        chats,
+        activeChatId: chats.length ? chats[0].id : null
+      };
+    });
+  }
+
   if (!currentUser) {
     return (
       <div className="auth-screen">
         <div className="auth-card">
-          <h1>Clock</h1>
-          <p>Вход в локальный чат без бэкенда</p>
+          <div className="brand-row">
+            <div className="brand-badge">C</div>
+            <div>
+              <h1>Clock</h1>
+              <p>Онлайн-мессенджер</p>
+            </div>
+          </div>
+
           <form onSubmit={loginOrRegister} className="form-grid">
             <input
               value={username}
@@ -269,26 +310,67 @@ function App() {
     <div className="app-layout">
       <aside className="sidebar">
         <div className="sidebar-header">
-          <h2>Чаты</h2>
-          <span className="user-badge">{currentUser.username}</span>
+          <div>
+            <span className="eyebrow">Мессенджер</span>
+            <h2>Чаты</h2>
+          </div>
+          <div className="status-pill"><span className="dot-online" /> online</div>
         </div>
 
-        <button className="primary-btn" onClick={createChat}>+ Новый чат</button>
+        <div className="user-card">
+          <div className="avatar-large">{currentUser.username.charAt(0).toUpperCase()}</div>
+          <div>
+            <strong>{currentUser.username}</strong>
+            <small>Активен сейчас</small>
+          </div>
+        </div>
+
+        <div className="toolbar-box">
+          <input
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            type="text"
+            placeholder="Поиск чатов"
+            className="search-input"
+          />
+          <button className="primary-btn" onClick={createChat}>+ Новый чат</button>
+        </div>
 
         <div className="chat-list">
-          {state.chats.map((chat) => (
-            <button
-              key={chat.id}
-              className={`chat-item ${chat.id === activeChat?.id ? 'active' : ''}`}
-              onClick={() => setState((prev) => ({ ...prev, activeChatId: chat.id }))}
-            >
-              <div className="chat-item-title">{chat.name}</div>
-              <div className="chat-item-meta">{chat.messages.length} сообщений</div>
-            </button>
+          {filteredChats.length ? (
+            filteredChats.map((chat) => (
+              <button
+                key={chat.id}
+                className={`chat-item ${chat.id === activeChat?.id ? 'active' : ''}`}
+                onClick={() => setState((prev) => ({ ...prev, activeChatId: chat.id }))}
+              >
+                <div className="chat-item-main">
+                  <div className="chat-name">{chat.name}</div>
+                  <div className="chat-preview">{getChatPreview(chat)}</div>
+                </div>
+                <div className="chat-meta">
+                  <span>{chat.messages.length}</span>
+                  {chat.messages.length ? <small>{formatChatStamp(chat.messages[chat.messages.length - 1].timestamp)}</small> : <small>Пусто</small>}
+                </div>
+              </button>
+            ))
+          ) : (
+            <div className="empty-state compact">Чатов не найдено</div>
+          )}
+        </div>
+
+        <div className="users-panel">
+          <div className="panel-title">Участники</div>
+          {state.users.map((user) => (
+            <div key={user.id} className="user-row">
+              <span className="mini-avatar">{user.username.charAt(0).toUpperCase()}</span>
+              <span>{user.username}</span>
+              {user.id === currentUser.id && <span className="you-tag">Вы</span>}
+            </div>
           ))}
         </div>
 
-        <button className="secondary-btn" onClick={() => setState((prev) => ({ ...prev, currentUserId: null }))}>
+        <button className="secondary-btn logout-btn" onClick={() => setState((prev) => ({ ...prev, currentUserId: null }))}>
           Выйти
         </button>
       </aside>
@@ -297,9 +379,13 @@ function App() {
         {activeChat ? (
           <>
             <div className="chat-topbar">
-              <h3>{activeChat.name}</h3>
+              <div>
+                <h3>{activeChat.name}</h3>
+                <small>{activeChat.messages.length} сообщений</small>
+              </div>
               <div className="toolbar-group">
                 <button className="secondary-btn" onClick={renameChat}>Переименовать</button>
+                <button className="danger-btn" onClick={() => deleteChat(activeChat.id)}>Удалить чат</button>
               </div>
             </div>
 
@@ -314,7 +400,7 @@ function App() {
                       <span>{message.senderName}</span>
                       <span>{formatTime(message.timestamp)}</span>
                     </div>
-                    <div>{message.text}</div>
+                    <div className="message-text">{message.text}</div>
                     {message.senderId === currentUser.id && (
                       <div className="message-actions">
                         <button onClick={() => handleEditMessage(message.id)}>Редакт.</button>
@@ -324,7 +410,7 @@ function App() {
                   </div>
                 ))
               ) : (
-                <div className="empty-state">Пока нет сообщений</div>
+                <div className="empty-state">Пока нет сообщений в этом чате</div>
               )}
             </div>
 
@@ -334,7 +420,7 @@ function App() {
             </form>
           </>
         ) : (
-          <div className="empty-state">Создайте чат</div>
+          <div className="empty-state large">Создайте чат, чтобы начать общение</div>
         )}
       </main>
     </div>
