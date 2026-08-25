@@ -19,13 +19,10 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
-// Serve frontend static files
+// Serve frontend static files (native JS Clock Messenger from project root)
 const projectRoot = path.join(__dirname, '../..');
-const frontendRoot = path.join(projectRoot, 'frontend');
-const frontendDist = path.join(frontendRoot, 'dist');
-const frontendPath = fs.existsSync(frontendDist) ? frontendDist : frontendRoot;
-console.log('Frontend path:', frontendPath, 'exists:', fs.existsSync(frontendPath));
-app.use(express.static(frontendPath));
+console.log('Project root:', projectRoot, 'exists:', fs.existsSync(projectRoot));
+app.use(express.static(projectRoot));
 
 // serve uploads
 const uploadDir = path.join(__dirname, '../uploads');
