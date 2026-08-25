@@ -58,50 +58,64 @@ function normalizeMessage(message) {
   };
 }
 
-export function getUsers() {
-  const state = readState();
-  return state.users.map((user) => ({
-    id: Number(user.id),
-    username: user.username,
-    password: user.password,
-    avatar: user.avatar || null,
-    online: Boolean(user.online),
-    lastSeen: Number(user.lastSeen || Date.now())
-  }));
-}
-
-export function getUserById(id) {
-  const state = readState();
-  const user = state.users.find(item => Number(item.id) === Number(id));
+function normalizeUser(user) {
   if (!user) return null;
   return {
     id: Number(user.id),
     username: user.username,
     password: user.password,
     avatar: user.avatar || null,
+    gallery: Array.isArray(user.gallery) ? user.gallery : [],
     online: Boolean(user.online),
     lastSeen: Number(user.lastSeen || Date.now())
   };
 }
 
-export function createUser(username, hashed, avatar = null) {
+export function getUsers() {
+  const state = readState();
+  return state.users.map(normalizeUser);
+}
+
+export function getUserById(id) {
+  const state = readState();
+  const user = state.users.find(item => Number(item.id) === Number(id));
+  return normalizeUser(user);
+}
+
+export function createUser(username, hashed, avatar = null, gallery = []) {
   const state = readState();
   const user = {
     id: getNextId(state.users),
     username,
     password: hashed,
     avatar: avatar || null,
+    gallery: Array.isArray(gallery) ? gallery : [],
     online: true,
     lastSeen: Date.now()
   };
   state.users.push(user);
   saveState(state);
-  return { id: user.id, username, avatar: user.avatar || null };
+  return normalizeUser(user);
 }
 
 export function getUserByUsername(username) {
   const state = readState();
-  return state.users.find(user => user.username === username) || null;
+  return normalizeUser(state.users.find(user => user.username === username) || null);
+}
+
+export function updateUser(id, updates = {}) {
+  const state = readState();
+  const user = state.users.find(item => Number(item.id) === Number(id));
+  if (!user) return null;
+
+  if (updates.username) user.username = updates.username;
+  if (updates.avatar !== undefined) user.avatar = updates.avatar;
+  if (updates.gallery !== undefined) user.gallery = Array.isArray(updates.gallery) ? updates.gallery : [];
+  if (updates.online !== undefined) user.online = Boolean(updates.online);
+  if (updates.lastSeen !== undefined) user.lastSeen = Number(updates.lastSeen || Date.now());
+
+  saveState(state);
+  return normalizeUser(user);
 }
 
 export function createChat(name, type = 'group', participants = []) {

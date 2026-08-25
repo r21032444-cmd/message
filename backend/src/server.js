@@ -46,14 +46,20 @@ function authMiddleware(req, res, next) {
 
 app.get('/health', (req, res) => res.json({ ok: true }));
 
+app.get('/me', authMiddleware, (req, res) => {
+  const user = db.getUserById(req.user.id);
+  if (!user) return res.status(404).send('User not found');
+  res.json(user);
+});
+
 // Auth
 app.post('/auth/register', async (req, res) => {
-  const { username, password, avatar } = req.body;
+  const { username, password, avatar, gallery } = req.body;
   if (!username || !password) return res.status(400).send('Missing');
   const existing = db.getUserByUsername(username);
   if (existing) return res.status(400).send('User exists');
   const hashed = await bcrypt.hash(password, 10);
-  const user = db.createUser(username, hashed, avatar || null);
+  const user = db.createUser(username, hashed, avatar || null, Array.isArray(gallery) ? gallery : []);
   const token = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET);
   res.json({ user, token });
 });
@@ -65,16 +71,26 @@ app.post('/auth/login', async (req, res) => {
   const ok = await bcrypt.compare(password, user.password);
   if (!ok) return res.status(400).send('Invalid');
   const token = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET);
-  const profile = db.getUserById(user.id);
-  res.json({ user: profile, token });
+  res.json({ user, token });
+});
+
+app.put('/users/me', authMiddleware, (req, res) => {
+  const { username, avatar, gallery } = req.body;
+  const updates = {};
+  if (username && username.trim()) updates.username = username.trim();
+  if (avatar !== undefined) updates.avatar = avatar || null;
+  if (gallery !== undefined) updates.gallery = Array.isArray(gallery) ? gallery : [];
+
+  const user = db.updateUser(req.user.id, updates);
+  if (!user) return res.status(404).send('User not found');
+  res.json(user);
 });
 
 app.get('/users', authMiddleware, (req, res) => {
-  const users = db.getUsers().map((user) => ({
-    ...user,
-    id: Number(user.id)
-  }));
-  res.json(users.filter((user) => Number(user.id) !== Number(req.user.id)));
+  const search = String(req.query.search || '').trim().toLowerCase();
+  const users = db.getUsers().filter((user) => Number(user.id) !== Number(req.user.id));
+  if (!search) return res.json(users);
+  res.json(users.filter((user) => user.username.toLowerCase().includes(search)));
 });
 
 // file upload
