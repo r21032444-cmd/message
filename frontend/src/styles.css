@@ -523,6 +523,67 @@ body[data-theme='dark'] .content {
   font-size: 1.2rem;
 }
 
+.presence-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.online-indicator {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 2px solid var(--panel);
+}
+
+.online-indicator.online {
+  background: var(--success);
+}
+
+.online-indicator.offline {
+  background: var(--muted);
+}
+
+.user-name-block {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+
+.user-name-block small {
+  color: var(--muted);
+}
+
+.user-action-btn {
+  border: none;
+  background: rgba(122, 166, 255, 0.12);
+  color: var(--primary);
+  border-radius: 999px;
+  padding: 7px 10px;
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+.direct-badge {
+  display: inline-block;
+  margin-left: 8px;
+  font-size: 0.6rem;
+  background: rgba(49, 185, 121, 0.12);
+  color: var(--success);
+  border-radius: 999px;
+  padding: 4px 7px;
+  vertical-align: middle;
+}
+
+body[data-theme='dark'] .user-action-btn {
+  background: rgba(122, 166, 255, 0.18);
+  color: var(--text);
+}
+
 @media (max-width: 900px) {
   .app-layout {
     flex-direction: column;
