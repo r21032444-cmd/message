@@ -626,8 +626,7 @@ function App() {
           </>
         ) : (
           <div className="empty-state large">
-            <button className="menu-btn primary-btn" type="button" onClick={goBack} style={{position:'absolute', top:'12px', left:'12px', width:'44px', height:'44px', borderRadiu
-s:'50%', padding:0, fontSize:'1.2rem'}}>☰</button>
+            <button className="menu-btn primary-btn" type="button" onClick={goBack} style={{position:'absolute', top:'12px', left:'12px', width:'44px', height:'44px', borderRadius:'50%', padding:0, fontSize:'1.2rem'}}>☰</button>
             Создайте чат, чтобы начать общение
           </div>
         )}
