@@ -1,58 +1,41 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-const STORAGE_KEY = 'clock-message-local-chat';
 const THEME_KEY = 'clock-message-theme';
+const TOKEN_KEY = 'clock-message-token';
+const USER_KEY = 'clock-message-user';
 
-const defaultState = {
-  currentUserId: null,
-  activeChatId: null,
-  users: [
-    { id: 'user-admin', username: 'admin', password: '123', name: 'Admin', online: true, lastSeen: Date.now() }
-  ],
-  chats: [
-    {
-      id: 'chat-general',
-      type: 'group',
-      name: 'General',
-      participants: ['user-admin'],
-      messages: [
-        { id: 'm1', senderId: 'user-admin', senderName: 'Admin', text: 'Привет! Это демонстрационный чат.', timestamp: Date.now() - 60000 },
-        { id: 'm2', senderId: 'user-admin', senderName: 'Admin', text: 'Можно писать сообщения, редактировать и удалять.', timestamp: Date.now() - 30000 }
-      ]
-    }
-  ]
-};
+const API_BASE = import.meta.env.VITE_API_URL || '';
 
-function loadState() {
-  try {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (!saved) {
-      return structuredClone(defaultState);
-    }
-    const parsed = JSON.parse(saved);
-    return {
-      ...structuredClone(defaultState),
-      ...parsed,
-      users: Array.isArray(parsed.users)
-        ? parsed.users.map((user) => ({
-            ...user,
-            online: Boolean(user.online),
-            lastSeen: user.lastSeen || Date.now()
-          }))
-        : structuredClone(defaultState.users),
-      chats: Array.isArray(parsed.chats)
-        ? parsed.chats.map((chat) => ({
-            ...chat,
-            type: chat.type || 'group',
-            participants: Array.isArray(chat.participants) ? chat.participants : []
-          }))
-        : structuredClone(defaultState.chats),
-      currentUserId: parsed.currentUserId || null,
-      activeChatId: parsed.activeChatId || null
-    };
-  } catch {
-    return structuredClone(defaultState);
+function apiFetch(path, options = {}, token = '') {
+  const headers = { ...(options.headers || {}) };
+  if (!(options.body instanceof FormData)) {
+    headers['Content-Type'] = headers['Content-Type'] || 'application/json';
   }
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+
+  return fetch(`${API_BASE}${path}`, {
+    ...options,
+    headers
+  }).then(async (response) => {
+    const text = await response.text();
+    if (!text) return null;
+
+    try {
+      const parsed = JSON.parse(text);
+      if (!response.ok) {
+        const message = parsed?.message || parsed || 'Ошибка запроса';
+        throw new Error(message);
+      }
+      return parsed;
+    } catch {
+      if (!response.ok) {
+        throw new Error(text || 'Ошибка запроса');
+      }
+      return text;
+    }
+  });
 }
 
 function formatTime(timestamp) {
@@ -67,8 +50,8 @@ function formatChatStamp(timestamp) {
 function getChatPreview(chat) {
   if (!chat?.messages?.length) return 'Нет сообщений';
   const lastMessage = chat.messages[chat.messages.length - 1];
-  const previewText = lastMessage.text ? lastMessage.text : 'Вложение';
-  return `${lastMessage.senderName}: ${previewText}`;
+  const previewText = lastMessage.text ? lastMessage.text : 'Файл';
+  return `${lastMessage.senderName || lastMessage.from || 'Система'}: ${previewText}`;
 }
 
 function getPresenceText(user) {
@@ -77,18 +60,35 @@ function getPresenceText(user) {
 }
 
 function App() {
-  const [state, setState] = useState(() => loadState());
+  const [theme, setTheme] = useState(() => localStorage.getItem(THEME_KEY) || 'light');
   const [authMode, setAuthMode] = useState('login');
   const [authError, setAuthError] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [avatarFile, setAvatarFile] = useState(null);
+  const [token, setToken] = useState(() => localStorage.getItem(TOKEN_KEY) || '');
+  const [currentUser, setCurrentUser] = useState(() => {
+    const saved = localStorage.getItem(USER_KEY);
+    return saved ? JSON.parse(saved) : null;
+  });
+  const [users, setUsers] = useState([]);
+  const [chats, setChats] = useState([]);
+  const [activeChatId, setActiveChatId] = useState(null);
+  const [messagesMap, setMessagesMap] = useState({});
   const [searchQuery, setSearchQuery] = useState('');
-  const [theme, setTheme] = useState(() => localStorage.getItem(THEME_KEY) || 'light');
+  const [selectedParticipants, setSelectedParticipants] = useState([]);
+  const [loading, setLoading] = useState(false);
   const bottomRef = useRef(null);
 
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  }, [state]);
+  const activeChat = useMemo(() => {
+    if (!activeChatId) return null;
+    return chats.find((chat) => String(chat.id) === String(activeChatId)) || null;
+  }, [activeChatId, chats]);
+
+  const activeMessages = useMemo(() => {
+    if (!activeChatId) return [];
+    return messagesMap[activeChatId] || [];
+  }, [activeChatId, messagesMap]);
 
   useEffect(() => {
     document.body.dataset.theme = theme;
@@ -96,53 +96,94 @@ function App() {
   }, [theme]);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [state.activeChatId, state.chats]);
+    if (token) {
+      localStorage.setItem(TOKEN_KEY, token);
+    } else {
+      localStorage.removeItem(TOKEN_KEY);
+    }
+  }, [token]);
 
-  const currentUser = useMemo(
-    () => state.users.find((user) => user.id === state.currentUserId) || null,
-    [state]
-  );
+  useEffect(() => {
+    if (currentUser) {
+      localStorage.setItem(USER_KEY, JSON.stringify(currentUser));
+    } else {
+      localStorage.removeItem(USER_KEY);
+    }
+  }, [currentUser]);
+
+  useEffect(() => {
+    if (!token || !currentUser) return;
+
+    const fetchUsers = async () => {
+      try {
+        const data = await apiFetch('/users', { method: 'GET' }, token);
+        setUsers(data || []);
+      } catch (error) {
+        console.error(error);
+      }
+    };
+
+    const fetchChats = async () => {
+      try {
+        const data = await apiFetch('/chats', { method: 'GET' }, token);
+        setChats(data || []);
+        if (data?.length && !activeChatId) {
+          setActiveChatId(String(data[0].id));
+        }
+      } catch (error) {
+        console.error(error);
+      }
+    };
+
+    fetchUsers();
+    fetchChats();
+  }, [token, currentUser, activeChatId]);
+
+  useEffect(() => {
+    if (!token || !activeChatId) return;
+
+    const fetchMessages = async () => {
+      try {
+        const data = await apiFetch(`/chats/${activeChatId}/messages`, { method: 'GET' }, token);
+        setMessagesMap((prev) => ({ ...prev, [activeChatId]: data || [] }));
+      } catch (error) {
+        console.error(error);
+      }
+    };
+
+    fetchMessages();
+  }, [token, activeChatId]);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [activeChatId, activeMessages]);
 
   const filteredChats = useMemo(() => {
     const value = searchQuery.trim().toLowerCase();
-    if (!value) return state.chats;
-    return state.chats.filter((chat) => chat.name.toLowerCase().includes(value));
-  }, [searchQuery, state.chats]);
+    if (!value) return chats;
+    return chats.filter((chat) => String(chat.name || '').toLowerCase().includes(value));
+  }, [chats, searchQuery]);
 
-  const activeChat = useMemo(() => {
-    if (!state.chats.length) return null;
-    if (!state.activeChatId) return state.chats[0];
-    return state.chats.find((chat) => chat.id === state.activeChatId) || state.chats[0];
-  }, [state]);
-
-  const getChatTitle = (chat) => {
-    if (!chat) return '';
-    if (chat.type !== 'direct') return chat.name;
-    const peerId = chat.participants?.find((id) => id !== currentUser?.id);
-    const peer = state.users.find((user) => user.id === peerId);
-    return peer ? peer.username : chat.name;
+  const toggleParticipant = (userId) => {
+    setSelectedParticipants((prev) =>
+      prev.includes(userId)
+        ? prev.filter((id) => id !== userId)
+        : [...prev, userId]
+    );
   };
 
-  useEffect(() => {
-    if (!state.chats.length) {
-      setState((prev) => ({
-        ...prev,
-        chats: [{
-          id: 'chat-general',
-          type: 'group',
-          name: 'General',
-          participants: [prev.users[0]?.id || 'user-admin'],
-          messages: []
-        }],
-        activeChatId: 'chat-general'
-      }));
-    } else if (!state.activeChatId) {
-      setState((prev) => ({ ...prev, activeChatId: prev.chats[0].id }));
-    }
-  }, [state.chats, state.activeChatId]);
+  async function uploadFile(file) {
+    if (!file) return null;
+    const formData = new FormData();
+    formData.append('file', file);
+    const result = await apiFetch('/upload', {
+      method: 'POST',
+      body: formData
+    }, token);
+    return result?.url || null;
+  }
 
-  function loginOrRegister(event) {
+  async function handleAuthSubmit(event) {
     event.preventDefault();
     const trimmedUser = username.trim();
     const trimmedPass = password.trim();
@@ -152,245 +193,211 @@ function App() {
       return;
     }
 
-    if (authMode === 'register') {
-      const exists = state.users.some(
-        (user) => user.username.toLowerCase() === trimmedUser.toLowerCase()
-      );
-
-      if (exists) {
-        setAuthError('Такой пользователь уже существует');
-        return;
+    try {
+      setLoading(true);
+      let avatarUrl = null;
+      if (authMode === 'register' && avatarFile) {
+        avatarUrl = await uploadFile(avatarFile);
       }
 
-      const newUser = {
-        id: `user-${Date.now()}`,
-        username: trimmedUser,
-        password: trimmedPass,
-        name: trimmedUser,
-        online: true,
-        lastSeen: Date.now()
-      };
+      const endpoint = authMode === 'register' ? '/auth/register' : '/auth/login';
+      const payload = authMode === 'register'
+        ? { username: trimmedUser, password: trimmedPass, avatar: avatarUrl }
+        : { username: trimmedUser, password: trimmedPass };
 
-      setState((prev) => ({
-        ...prev,
-        users: prev.users.map((user) => ({ ...user, online: true, lastSeen: Date.now() })).concat(newUser),
-        currentUserId: newUser.id
-      }));
+      const result = await apiFetch(endpoint, {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      });
+
+      const nextToken = result.token;
+      const profile = result.user || result.profile || null;
+      setToken(nextToken);
+      setCurrentUser(profile);
+      setAuthError('');
       setUsername('');
       setPassword('');
-      setAuthError('');
-      return;
+      setAvatarFile(null);
+      setSelectedParticipants([]);
+      setActiveChatId(null);
+    } catch (error) {
+      setAuthError(error.message || 'Ошибка авторизации');
+    } finally {
+      setLoading(false);
     }
+  }
 
-    const user = state.users.find(
-      (item) => item.username.toLowerCase() === trimmedUser.toLowerCase() && item.password === trimmedPass
+  async function createChatWithUsers(userIds = []) {
+    if (!currentUser) return;
+    const participants = Array.from(new Set([...userIds, currentUser.id]));
+
+    try {
+      const payload = {
+        name: userIds.length > 1 ? `Чат ${participants.length}` : 'Личный чат',
+        type: userIds.length > 1 ? 'group' : 'direct',
+        participants
+      };
+
+      const chat = await apiFetch('/chats', {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      }, token);
+
+      setChats((prev) => [chat, ...prev]);
+      setActiveChatId(String(chat.id));
+      setMessagesMap((prev) => ({ ...prev, [chat.id]: [] }));
+      setSelectedParticipants([]);
+    } catch (error) {
+      setAuthError(error.message || 'Не удалось создать чат');
+    }
+  }
+
+  async function createDirectChat(userId) {
+    const peer = users.find((u) => String(u.id) === String(userId));
+    if (!peer) return;
+
+    const duplicate = chats.find((chat) =>
+      chat.type === 'direct' &&
+      Array.isArray(chat.participants) &&
+      chat.participants.includes(Number(currentUser.id)) &&
+      chat.participants.includes(Number(userId))
     );
 
-    if (!user) {
-      setAuthError('Неверный логин или пароль');
+    if (duplicate) {
+      setActiveChatId(String(duplicate.id));
       return;
     }
 
-    setState((prev) => ({
-      ...prev,
-      users: prev.users.map((item) =>
-        item.id === user.id ? { ...item, online: true, lastSeen: Date.now() } : item
-      ),
-      currentUserId: user.id
-    }));
-    setUsername('');
-    setPassword('');
-    setAuthError('');
+    await createChatWithUsers([userId]);
   }
 
-  function handleSendMessage(event) {
+  async function createGroupChat() {
+    const ids = selectedParticipants.length ? selectedParticipants : [currentUser.id];
+    await createChatWithUsers(ids);
+  }
+
+  async function handleSendMessage(event) {
     event.preventDefault();
+    if (!activeChat || !token) return;
+
     const form = event.currentTarget;
     const text = form.message.value.trim();
-    if (!text || !activeChat || !currentUser) return;
+    const fileInput = form.querySelector('input[name="attachment"]');
+    const file = fileInput?.files?.[0] || null;
 
-    setState((prev) => ({
-      ...prev,
-      chats: prev.chats.map((chat) =>
-        chat.id === activeChat.id
-          ? {
-              ...chat,
-              messages: [
-                ...chat.messages,
-                {
-                  id: `msg-${Date.now()}`,
-                  senderId: currentUser.id,
-                  senderName: currentUser.username,
-                  text,
-                  timestamp: Date.now()
-                }
-              ]
-            }
+    try {
+      let attachmentUrl = null;
+      let mimeType = null;
+
+      if (file) {
+        attachmentUrl = await uploadFile(file);
+        mimeType = file.type || 'application/octet-stream';
+      }
+
+      if (!text && !attachmentUrl) return;
+
+      const body = {
+        text,
+        attachment: attachmentUrl,
+        mime: mimeType
+      };
+
+      const savedMessage = await apiFetch(`/chats/${activeChat.id}/messages`, {
+        method: 'POST',
+        body: JSON.stringify(body)
+      }, token);
+
+      setMessagesMap((prev) => ({
+        ...prev,
+        [activeChat.id]: [...(prev[activeChat.id] || []), savedMessage]
+      }));
+
+      form.reset();
+      setChats((prev) => prev.map((chat) =>
+        String(chat.id) === String(activeChat.id)
+          ? { ...chat, messages: [...(chat.messages || []), savedMessage] }
           : chat
-      )
-    }));
-
-    form.reset();
+      ));
+    } catch (error) {
+      setAuthError(error.message || 'Не удалось отправить сообщение');
+    }
   }
 
-  function handleEditMessage(messageId) {
-    if (!activeChat) return;
-    const message = activeChat.messages.find((item) => item.id === messageId);
-    if (!message) return;
+  async function handleDeleteMessage(messageId) {
+    if (!activeChat || !token) return;
+    try {
+      await apiFetch(`/chats/${activeChat.id}/messages/${messageId}`, { method: 'DELETE' }, token);
+      setMessagesMap((prev) => ({
+        ...prev,
+        [activeChat.id]: (prev[activeChat.id] || []).filter((msg) => String(msg.id) !== String(messageId))
+      }));
+      setChats((prev) => prev.map((chat) =>
+        String(chat.id) === String(activeChat.id)
+          ? { ...chat, messages: (chat.messages || []).filter((msg) => String(msg.id) !== String(messageId)) }
+          : chat
+      ));
+    } catch (error) {
+      setAuthError(error.message || 'Не удалось удалить сообщение');
+    }
+  }
 
-    const newText = window.prompt('Редактировать сообщение', message.text);
+  async function handleEditMessage(messageId) {
+    if (!activeChat || !token) return;
+    const currentMessage = (messagesMap[activeChat.id] || []).find((msg) => String(msg.id) === String(messageId));
+    if (!currentMessage) return;
+    const newText = window.prompt('Редактировать сообщение', currentMessage.text || '');
     if (newText === null) return;
     const trimmed = newText.trim();
     if (!trimmed) return;
 
-    setState((prev) => ({
-      ...prev,
-      chats: prev.chats.map((chat) =>
-        chat.id === activeChat.id
+    try {
+      const updated = await apiFetch(`/chats/${activeChat.id}/messages/${messageId}`, {
+        method: 'PUT',
+        body: JSON.stringify({ text: trimmed })
+      }, token);
+      setMessagesMap((prev) => ({
+        ...prev,
+        [activeChat.id]: (prev[activeChat.id] || []).map((msg) =>
+          String(msg.id) === String(messageId) ? updated : msg
+        )
+      }));
+      setChats((prev) => prev.map((chat) =>
+        String(chat.id) === String(activeChat.id)
           ? {
               ...chat,
-              messages: chat.messages.map((item) =>
-                item.id === messageId ? { ...item, text: trimmed } : item
+              messages: (chat.messages || []).map((msg) =>
+                String(msg.id) === String(messageId) ? { ...msg, text: trimmed } : msg
               )
             }
           : chat
-      )
-    }));
-  }
-
-  function handleDeleteMessage(messageId) {
-    if (!activeChat) return;
-    setState((prev) => ({
-      ...prev,
-      chats: prev.chats.map((chat) =>
-        chat.id === activeChat.id
-          ? { ...chat, messages: chat.messages.filter((item) => item.id !== messageId) }
-          : chat
-      )
-    }));
-  }
-
-  function createChat() {
-    const name = window.prompt('Название чата');
-    if (!name || !name.trim()) return;
-
-    const chat = {
-      id: `chat-${Date.now()}`,
-      type: 'group',
-      name: name.trim(),
-      participants: currentUser ? [currentUser.id] : [],
-      messages: [{
-        id: `msg-${Date.now()}-welcome`,
-        senderId: 'system',
-        senderName: 'Система',
-        text: `Чат "${name.trim()}" создан.`,
-        timestamp: Date.now()
-      }]
-    };
-
-    setState((prev) => ({
-      ...prev,
-      chats: [...prev.chats, chat],
-      activeChatId: chat.id
-    }));
-  }
-
-  function createDirectChat(userId) {
-    if (!currentUser) return;
-
-    const peer = state.users.find((user) => user.id === userId);
-    if (!peer || peer.id === currentUser.id) return;
-
-    const existing = state.chats.find((chat) =>
-      chat.type === 'direct' &&
-      Array.isArray(chat.participants) &&
-      chat.participants.includes(currentUser.id) &&
-      chat.participants.includes(userId)
-    );
-
-    if (existing) {
-      setState((prev) => ({ ...prev, activeChatId: existing.id }));
-      return;
+      ));
+    } catch (error) {
+      setAuthError(error.message || 'Не удалось изменить сообщение');
     }
-
-    const chat = {
-      id: `chat-${Date.now()}`,
-      type: 'direct',
-      name: peer.username,
-      participants: [currentUser.id, userId],
-      messages: [{
-        id: `msg-${Date.now()}-direct`,
-        senderId: 'system',
-        senderName: 'Система',
-        text: `Вы начали приватный чат с ${peer.username}.`,
-        timestamp: Date.now()
-      }]
-    };
-
-    setState((prev) => ({
-      ...prev,
-      chats: [...prev.chats, chat],
-      activeChatId: chat.id
-    }));
-  }
-
-  function renameChat() {
-    if (!activeChat) return;
-    const newName = window.prompt('Новое название чата', activeChat.name);
-    if (!newName || !newName.trim()) return;
-
-    setState((prev) => ({
-      ...prev,
-      chats: prev.chats.map((chat) =>
-        chat.id === activeChat.id ? { ...chat, name: newName.trim() } : chat
-      )
-    }));
-  }
-
-  function deleteChat(chatId) {
-    if (!chatId) return;
-    const chat = state.chats.find((item) => item.id === chatId);
-    if (!chat) return;
-
-    const confirmed = window.confirm(`Удалить чат "${chat.name}"?`);
-    if (!confirmed) return;
-
-    setState((prev) => {
-      const chats = prev.chats.filter((item) => item.id !== chatId);
-      return {
-        ...prev,
-        chats,
-        activeChatId: chats.length ? chats[0].id : null
-      };
-    });
-  }
-
-  function insertEmoji(emoji) {
-    const input = document.querySelector('input[name="message"]');
-    if (!input) return;
-
-    const start = input.selectionStart ?? input.value.length;
-    const end = input.selectionEnd ?? input.value.length;
-    const text = input.value.slice(0, start) + emoji + input.value.slice(end);
-    input.value = text;
-    input.focus();
-    input.setSelectionRange(start + emoji.length, start + emoji.length);
   }
 
   function handleLogout() {
-    if (!currentUser) return;
-    setState((prev) => ({
-      ...prev,
-      users: prev.users.map((user) =>
-        user.id === currentUser.id
-          ? { ...user, online: false, lastSeen: Date.now() }
-          : user
-      ),
-      currentUserId: null
-    }));
+    setToken('');
+    setCurrentUser(null);
+    setUsers([]);
+    setChats([]);
+    setMessagesMap({});
+    setActiveChatId(null);
+    setSelectedParticipants([]);
+    setAuthError('');
   }
 
-  if (!currentUser) {
+  function getChatTitle(chat) {
+    if (!chat) return 'Без названия';
+    if (chat.type === 'direct') {
+      const peerId = (chat.participants || []).find((id) => Number(id) !== Number(currentUser?.id));
+      const peer = users.find((user) => Number(user.id) === Number(peerId));
+      return peer ? peer.username : chat.name;
+    }
+    return chat.name || 'Групповой чат';
+  }
+
+  if (!currentUser || !token) {
     return (
       <div className="auth-screen">
         <div className="auth-card">
@@ -402,7 +409,7 @@ function App() {
             </div>
           </div>
 
-          <form onSubmit={loginOrRegister} className="form-grid">
+          <form onSubmit={handleAuthSubmit} className="form-grid">
             <input
               value={username}
               onChange={(e) => setUsername(e.target.value)}
@@ -417,12 +424,19 @@ function App() {
               placeholder="Пароль"
               required
             />
+            {authMode === 'register' && (
+              <label className="file-field">
+                <span>Аватар</span>
+                <input type="file" accept="image/*" onChange={(e) => setAvatarFile(e.target.files?.[0] || null)} />
+              </label>
+            )}
+
             <div className="inline-buttons">
-              <button type="submit" onClick={() => setAuthMode('login')} className="primary-btn">
-                Войти
+              <button type="submit" disabled={loading} className="primary-btn">
+                {loading ? '...' : authMode === 'login' ? 'Войти' : 'Регистрация'}
               </button>
-              <button type="submit" onClick={() => setAuthMode('register')} className="secondary-btn">
-                Регистрация
+              <button type="button" onClick={() => setAuthMode(authMode === 'login' ? 'register' : 'login')} className="secondary-btn">
+                {authMode === 'login' ? 'Создать аккаунт' : 'Уже есть аккаунт'}
               </button>
             </div>
           </form>
@@ -440,20 +454,22 @@ function App() {
             <span className="eyebrow">Мессенджер</span>
             <h2>Чаты</h2>
           </div>
-          <button
-            className="theme-toggle"
-            onClick={() => setTheme((prev) => (prev === 'light' ? 'dark' : 'light'))}
-            aria-label="Переключить тему"
-          >
+          <button className="theme-toggle" onClick={() => setTheme((prev) => (prev === 'light' ? 'dark' : 'light'))}>
             {theme === 'light' ? '🌙' : '☀️'}
           </button>
         </div>
 
         <div className="user-card">
-          <div className="avatar-large">{currentUser.username.charAt(0).toUpperCase()}</div>
+          <div className="avatar-large">
+            {currentUser.avatar ? (
+              <img src={currentUser.avatar} alt={currentUser.username} className="avatar-image" />
+            ) : (
+              currentUser.username.charAt(0).toUpperCase()
+            )}
+          </div>
           <div>
             <strong>{currentUser.username}</strong>
-            <small>{currentUser.online ? 'Активен сейчас' : 'Оффлайн'}</small>
+            <small>Активен сейчас</small>
           </div>
         </div>
 
@@ -465,7 +481,7 @@ function App() {
             placeholder="Поиск чатов"
             className="search-input"
           />
-          <button className="primary-btn" onClick={createChat}>+ Новый чат</button>
+          <button className="primary-btn" onClick={createGroupChat}>+ Новый чат</button>
         </div>
 
         <div className="chat-list">
@@ -473,19 +489,23 @@ function App() {
             filteredChats.map((chat) => (
               <button
                 key={chat.id}
-                className={`chat-item ${chat.id === activeChat?.id ? 'active' : ''}`}
-                onClick={() => setState((prev) => ({ ...prev, activeChatId: chat.id }))}
+                className={`chat-item ${String(chat.id) === String(activeChatId) ? 'active' : ''}`}
+                onClick={() => setActiveChatId(String(chat.id))}
               >
                 <div className="chat-item-main">
                   <div className="chat-name">
                     {getChatTitle(chat)}
                     {chat.type === 'direct' && <span className="direct-badge">DM</span>}
                   </div>
-                  <div className="chat-preview">{getChatPreview(chat)}</div>
+                  <div className="chat-preview">{getChatPreview({ ...chat, messages: chat.messages || messagesMap[chat.id] || [] })}</div>
                 </div>
                 <div className="chat-meta">
-                  <span>{chat.messages.length}</span>
-                  {chat.messages.length ? <small>{formatChatStamp(chat.messages[chat.messages.length - 1].timestamp)}</small> : <small>Пусто</small>}
+                  <span>{(chat.messages || messagesMap[chat.id] || []).length}</span>
+                  {(chat.messages || messagesMap[chat.id] || []).length ? (
+                    <small>{formatChatStamp((chat.messages || messagesMap[chat.id] || []).slice(-1)[0]?.timestamp || Date.now())}</small>
+                  ) : (
+                    <small>Пусто</small>
+                  )}
                 </div>
               </button>
             ))
@@ -495,27 +515,32 @@ function App() {
         </div>
 
         <div className="users-panel">
-          <div className="panel-title">Участники</div>
-          {state.users.filter((user) => user.id !== currentUser.id).map((user) => (
-            <div key={user.id} className="user-row">
+          <div className="panel-title">Пользователи</div>
+          {users.map((user) => (
+            <div key={user.id} className={`user-row ${selectedParticipants.includes(user.id) ? 'selected' : ''}`}>
               <span className="presence-wrap">
-                <span className="mini-avatar">{user.username.charAt(0).toUpperCase()}</span>
+                <span className="mini-avatar">
+                  {user.avatar ? <img src={user.avatar} alt={user.username} className="avatar-image small" /> : user.username.charAt(0).toUpperCase()}
+                </span>
                 <span className={`online-indicator ${user.online ? 'online' : 'offline'}`} />
               </span>
               <span className="user-name-block">
                 <span>{user.username}</span>
                 <small>{getPresenceText(user)}</small>
               </span>
-              <button className="user-action-btn" onClick={() => createDirectChat(user.id)}>
-                Написать
-              </button>
+              <div className="user-actions">
+                <button className="user-action-btn" type="button" onClick={() => toggleParticipant(user.id)}>
+                  {selectedParticipants.includes(user.id) ? '—' : '+'}
+                </button>
+                <button className="user-action-btn" type="button" onClick={() => createDirectChat(user.id)}>
+                  Написать
+                </button>
+              </div>
             </div>
           ))}
         </div>
 
-        <button className="secondary-btn logout-btn" onClick={handleLogout}>
-          Выйти
-        </button>
+        <button className="secondary-btn logout-btn" onClick={handleLogout}>Выйти</button>
       </aside>
 
       <main className="content">
@@ -524,32 +549,40 @@ function App() {
             <div className="chat-topbar">
               <div>
                 <h3>{getChatTitle(activeChat)}</h3>
-                <small>{activeChat.messages.length} сообщений</small>
+                <small>{(messagesMap[activeChat.id] || []).length} сообщений</small>
               </div>
               <div className="toolbar-group">
                 {activeChat.type !== 'direct' && (
-                  <button className="secondary-btn" onClick={renameChat}>Переименовать</button>
+                  <button className="secondary-btn" onClick={() => createGroupChat()}>
+                    Создать групповой
+                  </button>
                 )}
-                <button className="danger-btn" onClick={() => deleteChat(activeChat.id)}>Удалить чат</button>
               </div>
             </div>
 
             <div className="messages">
-              {activeChat.messages.length ? (
-                activeChat.messages.map((message) => (
+              {(messagesMap[activeChat.id] || []).length ? (
+                (messagesMap[activeChat.id] || []).map((message) => (
                   <div
                     key={message.id}
-                    className={`message ${message.senderId === currentUser.id ? 'mine' : ''} ${message.senderId === 'system' ? 'system-message' : ''}`}
+                    className={`message ${message.from === currentUser.username ? 'mine' : ''} ${message.from === 'system' ? 'system-message' : ''}`}
                   >
                     <div className="message-header">
-                      <span>{message.senderName}</span>
-                      <span>{formatTime(message.timestamp)}</span>
+                      <span>{message.from || message.senderName || 'Система'}</span>
+                      <span>{formatTime(message.ts || message.timestamp || Date.now())}</span>
                     </div>
-                    <div className="message-text">{message.text}</div>
-                    {message.senderId === currentUser.id && (
+                    <div className="message-text">
+                      {message.text || 'Файл'}
+                      {message.attachment && (
+                        <a href={message.attachment} target="_blank" rel="noreferrer" className="attachment-link">
+                          Открыть файл
+                        </a>
+                      )}
+                    </div>
+                    {message.from === currentUser.username && (
                       <div className="message-actions">
-                        <button onClick={() => handleEditMessage(message.id)}>Редакт.</button>
-                        <button onClick={() => handleDeleteMessage(message.id)}>Удалить</button>
+                        <button type="button" onClick={() => handleEditMessage(message.id)}>Редакт.</button>
+                        <button type="button" onClick={() => handleDeleteMessage(message.id)}>Удалить</button>
                       </div>
                     )}
                   </div>
@@ -562,7 +595,15 @@ function App() {
 
             <div className="emoji-row">
               {['😊', '👍', '🎉', '🔥', '✅', '🚀'].map((emoji) => (
-                <button key={emoji} type="button" onClick={() => insertEmoji(emoji)} className="emoji-btn">
+                <button key={emoji} type="button" className="emoji-btn" onClick={() => {
+                  const input = document.querySelector('input[name="message"]');
+                  if (!input) return;
+                  const start = input.selectionStart || 0;
+                  const end = input.selectionEnd || 0;
+                  input.value = input.value.slice(0, start) + emoji + input.value.slice(end);
+                  input.focus();
+                  input.setSelectionRange(start + emoji.length, start + emoji.length);
+                }}>
                   {emoji}
                 </button>
               ))}
@@ -570,6 +611,7 @@ function App() {
 
             <form onSubmit={handleSendMessage} className="composer">
               <input name="message" type="text" placeholder="Напишите сообщение..." autoComplete="off" />
+              <input name="attachment" type="file" className="file-attach" />
               <button type="submit" className="primary-btn">Отправить</button>
             </form>
           </>
