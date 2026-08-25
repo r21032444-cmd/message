@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 const STORAGE_KEY = 'clock-message-local-chat';
+const THEME_KEY = 'clock-message-theme';
 
 const defaultState = {
   currentUserId: null,
@@ -63,10 +64,21 @@ function App() {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
+  const [theme, setTheme] = useState(() => localStorage.getItem(THEME_KEY) || 'light');
+  const bottomRef = useRef(null);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   }, [state]);
+
+  useEffect(() => {
+    document.body.dataset.theme = theme;
+    localStorage.setItem(THEME_KEY, theme);
+  }, [theme]);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [state.activeChatId, state.chats]);
 
   const currentUser = useMemo(
     () => state.users.find((user) => user.id === state.currentUserId) || null,
@@ -152,7 +164,8 @@ function App() {
 
   function handleSendMessage(event) {
     event.preventDefault();
-    const text = event.target.message.value.trim();
+    const form = event.currentTarget;
+    const text = form.message.value.trim();
     if (!text || !activeChat || !currentUser) return;
 
     setState((prev) => ({
@@ -176,7 +189,7 @@ function App() {
       )
     }));
 
-    event.target.reset();
+    form.reset();
   }
 
   function handleEditMessage(messageId) {
@@ -223,7 +236,13 @@ function App() {
     const chat = {
       id: `chat-${Date.now()}`,
       name: name.trim(),
-      messages: []
+      messages: [{
+        id: `msg-${Date.now()}-welcome`,
+        senderId: 'system',
+        senderName: 'Система',
+        text: `Чат "${name.trim()}" создан.`,
+        timestamp: Date.now()
+      }]
     };
 
     setState((prev) => ({
@@ -262,6 +281,18 @@ function App() {
         activeChatId: chats.length ? chats[0].id : null
       };
     });
+  }
+
+  function insertEmoji(emoji) {
+    const input = document.querySelector('input[name="message"]');
+    if (!input) return;
+
+    const start = input.selectionStart ?? input.value.length;
+    const end = input.selectionEnd ?? input.value.length;
+    const text = input.value.slice(0, start) + emoji + input.value.slice(end);
+    input.value = text;
+    input.focus();
+    input.setSelectionRange(start + emoji.length, start + emoji.length);
   }
 
   if (!currentUser) {
@@ -314,7 +345,13 @@ function App() {
             <span className="eyebrow">Мессенджер</span>
             <h2>Чаты</h2>
           </div>
-          <div className="status-pill"><span className="dot-online" /> online</div>
+          <button
+            className="theme-toggle"
+            onClick={() => setTheme((prev) => (prev === 'light' ? 'dark' : 'light'))}
+            aria-label="Переключить тему"
+          >
+            {theme === 'light' ? '🌙' : '☀️'}
+          </button>
         </div>
 
         <div className="user-card">
@@ -394,7 +431,7 @@ function App() {
                 activeChat.messages.map((message) => (
                   <div
                     key={message.id}
-                    className={`message ${message.senderId === currentUser.id ? 'mine' : ''}`}
+                    className={`message ${message.senderId === currentUser.id ? 'mine' : ''} ${message.senderId === 'system' ? 'system-message' : ''}`}
                   >
                     <div className="message-header">
                       <span>{message.senderName}</span>
@@ -412,6 +449,15 @@ function App() {
               ) : (
                 <div className="empty-state">Пока нет сообщений в этом чате</div>
               )}
+              <div ref={bottomRef} />
+            </div>
+
+            <div className="emoji-row">
+              {['😊', '👍', '🎉', '🔥', '✅', '🚀'].map((emoji) => (
+                <button key={emoji} type="button" onClick={() => insertEmoji(emoji)} className="emoji-btn">
+                  {emoji}
+                </button>
+              ))}
             </div>
 
             <form onSubmit={handleSendMessage} className="composer">
