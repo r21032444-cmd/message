@@ -58,12 +58,45 @@ function normalizeMessage(message) {
   };
 }
 
-export function createUser(username, hashed) {
+export function getUsers() {
   const state = readState();
-  const user = { id: getNextId(state.users), username, password: hashed };
+  return state.users.map((user) => ({
+    id: Number(user.id),
+    username: user.username,
+    password: user.password,
+    avatar: user.avatar || null,
+    online: Boolean(user.online),
+    lastSeen: Number(user.lastSeen || Date.now())
+  }));
+}
+
+export function getUserById(id) {
+  const state = readState();
+  const user = state.users.find(item => Number(item.id) === Number(id));
+  if (!user) return null;
+  return {
+    id: Number(user.id),
+    username: user.username,
+    password: user.password,
+    avatar: user.avatar || null,
+    online: Boolean(user.online),
+    lastSeen: Number(user.lastSeen || Date.now())
+  };
+}
+
+export function createUser(username, hashed, avatar = null) {
+  const state = readState();
+  const user = {
+    id: getNextId(state.users),
+    username,
+    password: hashed,
+    avatar: avatar || null,
+    online: true,
+    lastSeen: Date.now()
+  };
   state.users.push(user);
   saveState(state);
-  return { id: user.id, username };
+  return { id: user.id, username, avatar: user.avatar || null };
 }
 
 export function getUserByUsername(username) {
@@ -71,9 +104,15 @@ export function getUserByUsername(username) {
   return state.users.find(user => user.username === username) || null;
 }
 
-export function createChat(name) {
+export function createChat(name, type = 'group', participants = []) {
   const state = readState();
-  const chat = { id: getNextId(state.chats), name: name || 'Chat' };
+  const chat = {
+    id: getNextId(state.chats),
+    name: name || 'Chat',
+    type,
+    participants: Array.isArray(participants) ? participants.map(Number) : [],
+    created_at: Date.now()
+  };
   state.chats.push(chat);
   saveState(state);
   return chat;
@@ -82,6 +121,21 @@ export function createChat(name) {
 export function getChats() {
   const state = readState();
   return [...state.chats].sort((a, b) => Number(b.id) - Number(a.id));
+}
+
+export function getChatsByUser(userId) {
+  const state = readState();
+  return state.chats
+    .filter((chat) => {
+      const ids = (chat.participants || []).map(Number);
+      return chat.type === 'group' || ids.includes(Number(userId));
+    })
+    .sort((a, b) => Number(b.id) - Number(a.id));
+}
+
+export function getChatById(chatId) {
+  const state = readState();
+  return state.chats.find(chat => Number(chat.id) === Number(chatId)) || null;
 }
 
 export function getMessages(chatId) {

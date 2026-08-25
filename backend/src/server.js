@@ -17,7 +17,7 @@ const JWT_SECRET = process.env.JWT_SECRET || 'clock_secret';
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 
 // Serve frontend static files
 const frontendPath = path.join(__dirname, '..', '..', 'frontend');
@@ -41,19 +41,19 @@ function authMiddleware(req, res, next) {
   try {
     req.user = jwt.verify(token, JWT_SECRET);
     next();
-  } catch (e) { return res.status(401).send('Unauthorized') }
+  } catch (e) { return res.status(401).send('Unauthorized'); }
 }
 
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 // Auth
 app.post('/auth/register', async (req, res) => {
-  const { username, password } = req.body;
+  const { username, password, avatar } = req.body;
   if (!username || !password) return res.status(400).send('Missing');
   const existing = db.getUserByUsername(username);
   if (existing) return res.status(400).send('User exists');
   const hashed = await bcrypt.hash(password, 10);
-  const user = db.createUser(username, hashed);
+  const user = db.createUser(username, hashed, avatar || null);
   const token = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET);
   res.json({ user, token });
 });
@@ -65,7 +65,16 @@ app.post('/auth/login', async (req, res) => {
   const ok = await bcrypt.compare(password, user.password);
   if (!ok) return res.status(400).send('Invalid');
   const token = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET);
-  res.json({ user: { id: user.id, username: user.username }, token });
+  const profile = db.getUserById(user.id);
+  res.json({ user: profile, token });
+});
+
+app.get('/users', authMiddleware, (req, res) => {
+  const users = db.getUsers().map((user) => ({
+    ...user,
+    id: Number(user.id)
+  }));
+  res.json(users.filter((user) => Number(user.id) !== Number(req.user.id)));
 });
 
 // file upload
@@ -78,18 +87,25 @@ app.post('/upload', upload.single('file'), (req, res) => {
 
 // Chats
 app.get('/chats', authMiddleware, (req, res) => {
-  const list = db.getChats();
+  const list = db.getChatsByUser(req.user.id);
   res.json(list);
 });
 
 app.post('/chats', authMiddleware, (req, res) => {
-  const { name } = req.body;
-  const chat = db.createChat(name || 'Chat');
+  const { name, type = 'group', participants = [] } = req.body;
+  const safeParticipants = Array.from(new Set([
+    Number(req.user.id),
+    ...participants.map(item => Number(item))
+  ].filter(Boolean)));
+
+  const chat = db.createChat(name || 'Chat', type || 'group', safeParticipants);
   res.json(chat);
 });
 
 app.get('/chats/:id/messages', authMiddleware, (req, res) => {
   const id = req.params.id;
+  const chat = db.getChatById(id);
+  if (!chat) return res.status(404).send('Chat not found');
   const msgs = db.getMessages(id);
   res.json(msgs);
 });
@@ -107,6 +123,7 @@ app.put('/chats/:id/messages/:mid', authMiddleware, (req, res) => {
   const { mid } = req.params;
   const { text } = req.body;
   const m = db.editMessage(mid, text);
+  if (!m) return res.status(404).send('Message not found');
   io.to(String(m.chatId)).emit('edit', { chatId: String(m.chatId), message: m });
   res.json(m);
 });
@@ -133,7 +150,7 @@ io.use((socket, next) => {
   try {
     socket.user = jwt.verify(token, JWT_SECRET);
     next();
-  } catch (e) { next(new Error('Unauthorized')) }
+  } catch (e) { next(new Error('Unauthorized')); }
 });
 
 io.on('connection', (socket) => {
