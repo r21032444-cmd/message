@@ -20,7 +20,10 @@ app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
 // Serve frontend static files
-const frontendPath = path.join(__dirname, '..', '..', 'frontend');
+const projectRoot = path.join(__dirname, '..');
+const frontendRoot = path.join(projectRoot, 'frontend');
+const frontendDist = path.join(frontendRoot, 'dist');
+const frontendPath = fs.existsSync(frontendDist) ? frontendDist : frontendRoot;
 app.use(express.static(frontendPath));
 
 // serve uploads
@@ -211,7 +214,7 @@ io.on('connection', (socket) => {
 
 // Serve index.html for all unmatched routes (SPA fallback)
 app.get('*', (req, res) => {
-  const indexPath = path.join(__dirname, '..', '..', 'frontend', 'index.html');
+  const indexPath = path.join(frontendPath, 'index.html');
   if (fs.existsSync(indexPath)) {
     res.sendFile(indexPath);
   } else {
