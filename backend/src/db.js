@@ -34,7 +34,7 @@ function readState() {
   }
 }
 
-function saveState(state) {
+export function saveState(state) {
   fs.writeFileSync(DATA_FILE, JSON.stringify(state, null, 2));
 }
 
@@ -239,10 +239,6 @@ export function markChatReadByUser(chatId, username) {
 
 export function getState() {
   return readState();
-}
-
-export function saveState(state) {
-  fs.writeFileSync(DATA_FILE, JSON.stringify(state, null, 2));
 }
 
 export function setUserOnline(userId, online) {
