@@ -137,6 +137,16 @@ app.post('/auth/login', async (req, res) => {
   }
 });
 
+// Logout - mark user offline and clear session
+app.post('/auth/logout', authMiddleware, (req, res) => {
+  try {
+    db.setUserOnline(req.user.id, false);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // --- User Routes ---
 app.get('/users/me', authMiddleware, (req, res) => {
   const user = db.getUserById(req.user.id);

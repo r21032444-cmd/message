@@ -261,15 +261,36 @@ export default function App() {
     }
   };
 
-  const handleLogout = () => {
-    setToken('');
-    setCurrentUser(null);
-    setUsers([]);
-    setChats([]);
-    setActiveChat(null);
-    setMessages([]);
-    setShowUsers(false);
-    setShowProfile(false);
+  const handleLogout = async () => {
+    try {
+      // Вызываем logout на сервере чтобы пометить пользователя оффлайн
+      await apiFetch('/auth/logout', { method: 'POST' }, token);
+    } catch (error) {
+      console.error('Logout error:', error);
+    } finally {
+      // Очищаем всё локально
+      setToken('');
+      setCurrentUser(null);
+      setUsers([]);
+      setChats([]);
+      setActiveChat(null);
+      setMessages([]);
+      setShowUsers(false);
+      setShowProfile(false);
+      setUsername('');
+      setPassword('');
+      setAuthError('');
+      setAuthMode('login');
+      setMessageInput('');
+      setSearchQuery('');
+      setTypingUsers({});
+      
+      // Отключаем socket
+      if (socketRef.current) {
+        socketRef.current.disconnect();
+        socketRef.current = null;
+      }
+    }
   };
 
   // Chat handlers
