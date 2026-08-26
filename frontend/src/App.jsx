@@ -1,686 +1,589 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
+import io from 'socket.io-client';
 
-const THEME_KEY = 'clock-message-theme';
-const TOKEN_KEY = 'clock-message-token';
-const USER_KEY = 'clock-message-user';
-const API_BASE = import.meta.env.VITE_API_URL || '';
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+const TOKEN_KEY = 'messenger_token';
+const USER_KEY = 'messenger_user';
 
 function apiFetch(path, options = {}, token = '') {
   const headers = { ...(options.headers || {}) };
-  if (!(options.body instanceof FormData)) {
-    headers['Content-Type'] = headers['Content-Type'] || 'application/json';
-  }
-  if (token) {
-    headers.Authorization = `Bearer ${token}`;
-  }
-
-  return fetch(`${API_BASE}${path}`, {
-    ...options,
-    headers
-  }).then(async (response) => {
-    const text = await response.text();
-    if (!text) return null;
-
-    try {
-      const parsed = JSON.parse(text);
-      if (!response.ok) {
-        const message = parsed?.message || parsed || 'Ошибка запроса';
-        throw new Error(message);
+  headers['Content-Type'] = headers['Content-Type'] || 'application/json';
+  if (token) headers.Authorization = `Bearer ${token}`;
+  
+  return fetch(`${API_URL}${path}`, { ...options, headers })
+    .then(async (response) => {
+      const text = await response.text();
+      if (!text) return null;
+      try {
+        const parsed = JSON.parse(text);
+        if (!response.ok) throw new Error(parsed.error || 'Ошибка');
+        return parsed;
+      } catch {
+        if (!response.ok) throw new Error(text || 'Ошибка');
+        return text;
       }
-      return parsed;
-    } catch {
-      if (!response.ok) {
-        throw new Error(text || 'Ошибка запроса');
-      }
-      return text;
-    }
-  });
+    });
 }
 
 function formatTime(timestamp) {
   return new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
-function formatChatStamp(timestamp) {
-  if (!timestamp) return 'Только что';
-  return new Date(timestamp).toLocaleString([], { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+function formatChatTime(timestamp) {
+  if (!timestamp) return '';
+  const date = new Date(timestamp);
+  const now = new Date();
+  const isToday = date.toDateString() === now.toDateString();
+  if (isToday) return formatTime(timestamp);
+  return date.toLocaleDateString([], { day: '2-digit', month: 'short' });
 }
 
-function getChatPreview(chat) {
-  if (!chat?.messages?.length) return 'Нет сообщений';
-  const lastMessage = chat.messages[chat.messages.length - 1];
-  const previewText = lastMessage.text ? lastMessage.text : 'Файл';
-  return `${lastMessage.senderName || lastMessage.from || 'Система'}: ${previewText}`;
+function getAvatarColor(username) {
+  const colors = [
+    '#3b82f6', '#6366f1', '#8b5cf6', '#a855f7', '#d946ef',
+    '#ec4899', '#f43f5e', '#ef4444', '#f97316', '#eab308',
+    '#84cc16', '#22c55e', '#10b981', '#14b8a6', '#06b6d4'
+  ];
+  let hash = 0;
+  for (let i = 0; i < username.length; i++) {
+    hash = username.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  return colors[Math.abs(hash) % colors.length];
 }
 
-function getPresenceText(user) {
-  if (!user) return 'Не в сети';
-  return user.online ? 'Онлайн' : `Был ${new Date(user.lastSeen || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+function Avatar({ username, size = 48, online = false, className = '' }) {
+  const color = getAvatarColor(username);
+  return (
+    <div className={`avatar ${online ? 'online' : ''} ${className}`}
+         style={{ width: size, height: size, background: color }}>
+      {username.charAt(0).toUpperCase()}
+    </div>
+  );
 }
 
-function App() {
-  const [theme, setTheme] = useState(() => localStorage.getItem(THEME_KEY) || 'light');
-  const [authMode, setAuthMode] = useState('login');
-  const [authError, setAuthError] = useState('');
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  const [avatarFile, setAvatarFile] = useState(null);
+export default function App() {
   const [token, setToken] = useState(() => localStorage.getItem(TOKEN_KEY) || '');
   const [currentUser, setCurrentUser] = useState(() => {
     const saved = localStorage.getItem(USER_KEY);
     return saved ? JSON.parse(saved) : null;
   });
-  const [users, setUsers] = useState([]);
-  const [userSearchQuery, setUserSearchQuery] = useState('');
-  const [chats, setChats] = useState([]);
-  const [activeChatId, setActiveChatId] = useState(null);
-  const [messagesMap, setMessagesMap] = useState({});
-  const [searchQuery, setSearchQuery] = useState('');
-  const [selectedParticipants, setSelectedParticipants] = useState([]);
-  const [profileOpen, setProfileOpen] = useState(false);
-  const [profileForm, setProfileForm] = useState({ username: '', avatar: '', gallery: [] });
+  
+  // Auth state
+  const [authMode, setAuthMode] = useState('login');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [authError, setAuthError] = useState('');
   const [loading, setLoading] = useState(false);
-  const [showSidebar, setShowSidebar] = useState(true);
-  const bottomRef = useRef(null);
+  
+  // App state
+  const [users, setUsers] = useState([]);
+  const [chats, setChats] = useState([]);
+  const [activeChat, setActiveChat] = useState(null);
+  const [messages, setMessages] = useState([]);
+  const [messageInput, setMessageInput] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [showUsers, setShowUsers] = useState(false);
+  const [showProfile, setShowProfile] = useState(false);
+  const [typingUsers, setTypingUsers] = useState({});
+  const [toast, setToast] = useState(null);
+  
+  const socketRef = useRef(null);
+  const messagesEndRef = useRef(null);
   const messageInputRef = useRef(null);
+  const typingTimeoutRef = useRef(null);
 
-  const activeChat = useMemo(() => {
-    if (!activeChatId) return null;
-    return chats.find((chat) => String(chat.id) === String(activeChatId)) || null;
-  }, [activeChatId, chats]);
+  // Toast helper
+  const showToast = (message, type = 'success') => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 3000);
+  };
 
-  const activeMessages = useMemo(() => {
-    if (!activeChatId) return [];
-    return messagesMap[activeChatId] || [];
-  }, [activeChatId, messagesMap]);
-
-  const filteredChats = useMemo(() => {
-    const value = searchQuery.trim().toLowerCase();
-    if (!value) return chats;
-    return chats.filter((chat) => String(chat.name || '').toLowerCase().includes(value));
-  }, [chats, searchQuery]);
-
-  const visibleUsers = useMemo(() => {
-    const value = userSearchQuery.trim().toLowerCase();
-    if (!value) return users;
-    return users.filter((user) => user.username.toLowerCase().includes(value));
-  }, [users, userSearchQuery]);
-
+  // Socket.IO connection
   useEffect(() => {
-    document.body.dataset.theme = theme;
-    localStorage.setItem(THEME_KEY, theme);
-  }, [theme]);
+    if (!token || !currentUser) return;
+    
+    const socket = io(API_URL, {
+      auth: { token },
+      transports: ['websocket', 'polling']
+    });
+    
+    socket.on('connect', () => {
+      console.log('Connected to server');
+    });
+    
+    socket.on('message', (data) => {
+      if (data.chatId === String(activeChat?.id)) {
+        setMessages(prev => [...prev, data.message]);
+      }
+    });
+    
+    socket.on('user:online', (data) => {
+      setUsers(prev => prev.map(u => 
+        u.id === data.userId ? { ...u, online: true } : u
+      ));
+      if (activeChat?.otherUser?.id === data.userId) {
+        setActiveChat(prev => prev ? {
+          ...prev,
+          otherUser: { ...prev.otherUser, online: true }
+        } : null);
+      }
+    });
+    
+    socket.on('user:offline', (data) => {
+      setUsers(prev => prev.map(u => 
+        u.id === data.userId ? { ...u, online: false } : u
+      ));
+      if (activeChat?.otherUser?.id === data.userId) {
+        setActiveChat(prev => prev ? {
+          ...prev,
+          otherUser: { ...prev.otherUser, online: false }
+        } : null);
+      }
+    });
+    
+    socket.on('typing', (data) => {
+      if (data.chatId === String(activeChat?.id)) {
+        setTypingUsers(prev => ({
+          ...prev,
+          [data.username]: data.typing
+        }));
+      }
+    });
+    
+    socketRef.current = socket;
+    
+    return () => {
+      socket.disconnect();
+    };
+  }, [token, currentUser, activeChat]);
 
+  // Save auth to localStorage
   useEffect(() => {
-    if (token) localStorage.setItem(TOKEN_KEY, token); else localStorage.removeItem(TOKEN_KEY);
+    if (token) localStorage.setItem(TOKEN_KEY, token);
+    else localStorage.removeItem(TOKEN_KEY);
   }, [token]);
 
   useEffect(() => {
-    if (currentUser) localStorage.setItem(USER_KEY, JSON.stringify(currentUser)); else localStorage.removeItem(USER_KEY);
+    if (currentUser) localStorage.setItem(USER_KEY, JSON.stringify(currentUser));
+    else localStorage.removeItem(USER_KEY);
   }, [currentUser]);
 
+  // Scroll to bottom on new messages
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+
+  // Load users and chats
   useEffect(() => {
     if (!token || !currentUser) return;
-    const loadMe = async () => {
+    
+    const loadData = async () => {
       try {
-        const me = await apiFetch('/me', { method: 'GET' }, token);
-        setCurrentUser(me);
+        const [usersData, chatsData] = await Promise.all([
+          apiFetch('/users', {}, token),
+          apiFetch('/chats', {}, token)
+        ]);
+        setUsers(usersData || []);
+        setChats(chatsData || []);
       } catch (error) {
-        console.error(error);
+        console.error('Failed to load data:', error);
       }
     };
-    loadMe();
-  }, [token, currentUser?.id]);
+    
+    loadData();
+  }, [token, currentUser]);
 
+  // Load messages for active chat
   useEffect(() => {
-    if (!token || !currentUser) return;
-    const loadUsers = async () => {
-      try {
-        const query = userSearchQuery.trim() ? `?search=${encodeURIComponent(userSearchQuery.trim())}` : '';
-        const data = await apiFetch(`/users${query}`, { method: 'GET' }, token);
-        setUsers(data || []);
-      } catch (error) {
-        console.error(error);
-      }
-    };
-    const loadChats = async () => {
-      try {
-        const data = await apiFetch('/chats', { method: 'GET' }, token);
-        setChats(data || []);
-        if ((data || []).length && !activeChatId) {
-          setActiveChatId(String(data[0].id));
-        }
-      } catch (error) {
-        console.error(error);
-      }
-    };
-
-    loadUsers();
-    loadChats();
-  }, [token, currentUser, userSearchQuery, activeChatId]);
-
-  useEffect(() => {
-    if (!token || !activeChatId) return;
+    if (!token || !activeChat) return;
+    
     const loadMessages = async () => {
       try {
-        const data = await apiFetch(`/chats/${activeChatId}/messages`, { method: 'GET' }, token);
-        setMessagesMap((prev) => ({ ...prev, [activeChatId]: data || [] }));
+        const messagesData = await apiFetch(`/chats/${activeChat.id}/messages`, {}, token);
+        setMessages(messagesData || []);
+        
+        if (socketRef.current) {
+          socketRef.current.emit('join:private', { chatId: activeChat.id });
+        }
       } catch (error) {
-        console.error(error);
+        console.error('Failed to load messages:', error);
       }
     };
+    
     loadMessages();
-  }, [token, activeChatId]);
+  }, [token, activeChat]);
 
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [activeChatId, activeMessages]);
-
-  useEffect(() => {
-    if (!token || !currentUser || !Object.keys(messagesMap).length) return;
-    const latest = Object.entries(messagesMap).flatMap(([chatId, items]) =>
-      (items || []).map((item) => ({ chatId, ...item }))
-    );
-    if (!latest.length) return;
-
-    const notifyCandidates = latest.filter((msg) => {
-      const from = msg.from || msg.senderName || '';
-      const isOwn = from === currentUser.username;
-      const isCurrentChat = String(msg.chatId) === String(activeChatId);
-      return !isOwn && !isCurrentChat;
-    });
-
-    if (!notifyCandidates.length) return;
-    const last = notifyCandidates[notifyCandidates.length - 1];
-    const title = 'Новое сообщение';
-    const body = `${last.from}: ${last.text || 'Файл'}`;
-
-    if ('Notification' in window && Notification.permission === 'granted') {
-      new Notification(title, { body });
-    } else if (document.visibilityState === 'hidden' && 'Notification' in window) {
-      Notification.requestPermission().catch(() => {});
-    }
-  }, [messagesMap, activeChatId, currentUser, token]);
-
-  const toggleParticipant = (userId) => {
-    setSelectedParticipants((prev) => prev.includes(userId) ? prev.filter((id) => id !== userId) : [...prev, userId]);
-  };
-
-  function goToChat(chatId) {
-    setActiveChatId(String(chatId));
-    setShowSidebar(false);
-  }
-
-  function goBack() {
-    setShowSidebar(true);
-  }
-
-  async function uploadFile(file) {
-    if (!file) return null;
-    const formData = new FormData();
-    formData.append('file', file);
-    const result = await apiFetch('/upload', { method: 'POST', body: formData }, token);
-    return result?.url || null;
-  }
-
-  async function handleAuthSubmit(event) {
-    event.preventDefault();
-    const trimmedUser = username.trim();
-    const trimmedPass = password.trim();
-
-    if (!trimmedUser || !trimmedPass) {
+  // Auth handlers
+  const handleAuth = async (e) => {
+    e.preventDefault();
+    setAuthError('');
+    
+    if (!username.trim() || !password.trim()) {
       setAuthError('Введите логин и пароль');
       return;
     }
-
+    
+    setLoading(true);
     try {
-      setLoading(true);
-      let avatarUrl = null;
-      if (authMode === 'register' && avatarFile) {
-        avatarUrl = await uploadFile(avatarFile);
-      }
-
       const endpoint = authMode === 'register' ? '/auth/register' : '/auth/login';
-      const body = authMode === 'register'
-        ? { username: trimmedUser, password: trimmedPass, avatar: avatarUrl }
-        : { username: trimmedUser, password: trimmedPass };
-
-      const result = await apiFetch(endpoint, { method: 'POST', body: JSON.stringify(body) });
-      const nextToken = result.token;
-      const profile = result.user || null;
-
-      setToken(nextToken);
-      setCurrentUser(profile);
-      setAuthError('');
+      const data = await apiFetch(endpoint, {
+        method: 'POST',
+        body: JSON.stringify({ username: username.trim().toLowerCase(), password })
+      });
+      
+      setToken(data.token);
+      setCurrentUser(data.user);
       setUsername('');
       setPassword('');
-      setAvatarFile(null);
-      setSelectedParticipants([]);
-      setActiveChatId(null);
+      showToast(authMode === 'register' ? 'Регистрация успешна!' : 'Добро пожаловать!');
     } catch (error) {
       setAuthError(error.message || 'Ошибка авторизации');
     } finally {
       setLoading(false);
     }
-  }
+  };
 
-  async function createChatWithUsers(userIds = []) {
-    if (!currentUser) return;
-    const participants = Array.from(new Set([...userIds, Number(currentUser.id)]));
-    try {
-      const payload = {
-        name: userIds.length > 1 ? `Чат ${participants.length}` : 'Личный чат',
-        type: userIds.length > 1 ? 'group' : 'direct',
-        participants
-      };
-      const chat = await apiFetch('/chats', { method: 'POST', body: JSON.stringify(payload) }, token);
-      setChats((prev) => [chat, ...prev]);
-      setActiveChatId(String(chat.id));
-      setMessagesMap((prev) => ({ ...prev, [chat.id]: [] }));
-      setSelectedParticipants([]);
-    } catch (error) {
-      setAuthError(error.message || 'Не удалось создать чат');
-    }
-  }
-
-  async function createDirectChat(userId) {
-    const peer = users.find((u) => String(u.id) === String(userId));
-    if (!peer) return;
-    const duplicate = chats.find((chat) =>
-      chat.type === 'direct' &&
-      Array.isArray(chat.participants) &&
-      chat.participants.includes(Number(currentUser.id)) &&
-      chat.participants.includes(Number(userId))
-    );
-    if (duplicate) {
-      setActiveChatId(String(duplicate.id));
-      return;
-    }
-    await createChatWithUsers([Number(userId)]);
-  }
-
-  async function createGroupChat() {
-    if (!selectedParticipants.length) {
-      const chosen = users.slice(0, 3).map((user) => Number(user.id));
-      if (!chosen.length) return;
-      await createChatWithUsers(chosen);
-      return;
-    }
-    await createChatWithUsers(selectedParticipants.map(Number));
-  }
-
-  async function handleSendMessage(event) {
-    event.preventDefault();
-    if (!activeChat || !token) return;
-
-    const form = event.currentTarget;
-    const text = form.message.value.trim();
-    const fileInput = form.querySelector('input[name="attachment"]');
-    const file = fileInput?.files?.[0] || null;
-
-    try {
-      let attachmentUrl = null;
-      let mimeType = null;
-      if (file) {
-        attachmentUrl = await uploadFile(file);
-        mimeType = file.type || 'application/octet-stream';
-      }
-      if (!text && !attachmentUrl) return;
-
-      const payload = { text, attachment: attachmentUrl, mime: mimeType };
-      const saved = await apiFetch(`/chats/${activeChat.id}/messages`, { method: 'POST', body: JSON.stringify(payload) }, token);
-      setMessagesMap((prev) => ({ ...prev, [activeChat.id]: [...(prev[activeChat.id] || []), saved] }));
-      setChats((prev) => prev.map((chat) =>
-        String(chat.id) === String(activeChat.id)
-          ? { ...chat, messages: [...(chat.messages || []), saved] }
-          : chat
-      ));
-      form.reset();
-    } catch (error) {
-      setAuthError(error.message || 'Не удалось отправить сообщение');
-    }
-  }
-
-  async function handleEditMessage(messageId) {
-    if (!activeChat || !token) return;
-    const currentMessage = (messagesMap[activeChat.id] || []).find((msg) => String(msg.id) === String(messageId));
-    if (!currentMessage) return;
-    const newText = window.prompt('Редактировать сообщение', currentMessage.text || '');
-    if (newText === null) return;
-    const trimmed = newText.trim();
-    if (!trimmed) return;
-
-    try {
-      const updated = await apiFetch(`/chats/${activeChat.id}/messages/${messageId}`, {
-        method: 'PUT',
-        body: JSON.stringify({ text: trimmed })
-      }, token);
-
-      setMessagesMap((prev) => ({
-        ...prev,
-        [activeChat.id]: (prev[activeChat.id] || []).map((msg) => String(msg.id) === String(messageId) ? updated : msg)
-      }));
-      setChats((prev) => prev.map((chat) =>
-        String(chat.id) === String(activeChat.id)
-          ? {
-              ...chat,
-              messages: (chat.messages || []).map((msg) => String(msg.id) === String(messageId) ? { ...msg, text: trimmed } : msg)
-            }
-          : chat
-      ));
-    } catch (error) {
-      setAuthError(error.message || 'Не удалось изменить сообщение');
-    }
-  }
-
-  async function handleDeleteMessage(messageId) {
-    if (!activeChat || !token) return;
-    try {
-      await apiFetch(`/chats/${activeChat.id}/messages/${messageId}`, { method: 'DELETE' }, token);
-      setMessagesMap((prev) => ({ ...prev, [activeChat.id]: (prev[activeChat.id] || []).filter((msg) => String(msg.id) !== String(messageId)) }));
-      setChats((prev) => prev.map((chat) =>
-        String(chat.id) === String(activeChat.id)
-          ? { ...chat, messages: (chat.messages || []).filter((msg) => String(msg.id) !== String(messageId)) }
-          : chat
-      ));
-    } catch (error) {
-      setAuthError(error.message || 'Не удалось удалить сообщение');
-    }
-  }
-
-  function handleLogout() {
+  const handleLogout = () => {
     setToken('');
     setCurrentUser(null);
     setUsers([]);
     setChats([]);
-    setMessagesMap({});
-    setActiveChatId(null);
-    setSelectedParticipants([]);
-    setAuthError('');
-    setProfileOpen(false);
-  }
+    setActiveChat(null);
+    setMessages([]);
+    setShowUsers(false);
+    setShowProfile(false);
+  };
 
-  async function saveProfile() {
+  // Chat handlers
+  const startChat = async (userId) => {
     try {
-      setLoading(true);
-      const payload = {
-        username: profileForm.username.trim(),
-        avatar: profileForm.avatar || null,
-        gallery: profileForm.gallery || []
-      };
-
-      const updated = await apiFetch('/users/me', { method: 'PUT', body: JSON.stringify(payload) }, token);
-      setCurrentUser(updated);
-      setProfileOpen(false);
-      setAuthError('');
+      const data = await apiFetch('/chats/private', {
+        method: 'POST',
+        body: JSON.stringify({ userId })
+      }, token);
+      
+      setActiveChat(data);
+      setShowUsers(false);
+      setTypingUsers({});
+      
+      setTimeout(() => messageInputRef.current?.focus(), 100);
     } catch (error) {
-      setAuthError(error.message || 'Не удалось сохранить профиль');
-    } finally {
-      setLoading(false);
+      showToast(error.message || 'Не удалось начать чат', 'error');
     }
-  }
+  };
 
-  async function addGalleryImage(file) {
-    if (!file) return;
-    const url = await uploadFile(file);
-    if (!url) return;
-    setProfileForm((prev) => ({
-      ...prev,
-      gallery: [...(prev.gallery || []), url]
-    }));
-  }
-
-  function getChatTitle(chat) {
-    if (!chat) return 'Без названия';
-    if (chat.type === 'direct') {
-      const peerId = (chat.participants || []).find((id) => Number(id) !== Number(currentUser?.id));
-      const peer = users.find((user) => Number(user.id) === Number(peerId));
-      return peer ? peer.username : chat.name;
+  const sendMessage = async (e) => {
+    e.preventDefault();
+    if (!messageInput.trim() || !activeChat) return;
+    
+    const text = messageInput.trim();
+    setMessageInput('');
+    
+    if (socketRef.current) {
+      socketRef.current.emit('message:send', {
+        chatId: activeChat.id,
+        text
+      });
     }
-    return chat.name || 'Групповой чат';
-  }
+  };
 
+  const handleTyping = (e) => {
+    setMessageInput(e.target.value);
+    
+    if (socketRef.current && activeChat) {
+      socketRef.current.emit('typing:start', { chatId: activeChat.id });
+      
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current);
+      }
+      
+      typingTimeoutRef.current = setTimeout(() => {
+        socketRef.current.emit('typing:stop', { chatId: activeChat.id });
+      }, 1000);
+    }
+  };
+
+  // Filtered data
+  const filteredChats = useMemo(() => {
+    if (!searchQuery.trim()) return chats;
+    return chats.filter(chat => 
+      chat.otherUser?.username.toLowerCase().includes(searchQuery.toLowerCase())
+    );
+  }, [chats, searchQuery]);
+
+  const filteredUsers = useMemo(() => {
+    if (!searchQuery.trim()) return users;
+    return users.filter(user => 
+      user.username.toLowerCase().includes(searchQuery.toLowerCase())
+    );
+  }, [users, searchQuery]);
+
+  const typingIndicator = useMemo(() => {
+    const typers = Object.entries(typingUsers).filter(([_, typing]) => typing);
+    if (typers.length === 0) return null;
+    
+    const names = typers.map(([name]) => name);
+    return (
+      <div className="typing-indicator">
+        <div className="typing-dots">
+          <span></span><span></span><span></span>
+        </div>
+        {names.length === 1 ? `${names[0]} печатает...` : `${names.length} печатают...`}
+      </div>
+    );
+  }, [typingUsers]);
+
+  // Render
   if (!currentUser || !token) {
     return (
-      <div className="auth-screen">
+      <div className="auth-container">
         <div className="auth-card">
-          <div className="brand-row">
-            <div className="brand-badge">C</div>
-            <div>
-              <h1>Clock</h1>
-              <p>Онлайн-мессенджер</p>
-            </div>
+          <div className="auth-logo">
+            <div className="logo-icon">💬</div>
+            <h1>Мессенджер</h1>
+            <p>Общайтесь в реальном времени</p>
           </div>
-
-          <form onSubmit={handleAuthSubmit} className="form-grid">
-            <input value={username} onChange={(e) => setUsername(e.target.value)} type="text" placeholder="Логин" required />
-            <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" placeholder="Пароль" required />
-            {authMode === 'register' && (
-              <label className="file-field">
-                <span>Аватар</span>
-                <input type="file" accept="image/*" onChange={(e) => setAvatarFile(e.target.files?.[0] || null)} />
-              </label>
-            )}
-
-            <div className="inline-buttons">
-              <button type="submit" disabled={loading} className="primary-btn">
-                {loading ? '...' : authMode === 'login' ? 'Войти' : 'Регистрация'}
-              </button>
-              <button type="button" onClick={() => setAuthMode(authMode === 'login' ? 'register' : 'login')} className="secondary-btn">
-                {authMode === 'login' ? 'Создать аккаунт' : 'Уже есть аккаунт'}
-              </button>
+          
+          <div className="auth-tabs">
+            <button 
+              className={`auth-tab ${authMode === 'login' ? 'active' : ''}`}
+              onClick={() => { setAuthMode('login'); setAuthError(''); }}
+            >
+              Вход
+            </button>
+            <button 
+              className={`auth-tab ${authMode === 'register' ? 'active' : ''}`}
+              onClick={() => { setAuthMode('register'); setAuthError(''); }}
+            >
+              Регистрация
+            </button>
+          </div>
+          
+          <form onSubmit={handleAuth} className="auth-form">
+            <div className="form-group">
+              <label>Логин</label>
+              <input
+                className="form-input"
+                type="text"
+                placeholder="Введите логин"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                autoComplete="username"
+              />
             </div>
+            
+            <div className="form-group">
+              <label>Пароль</label>
+              <input
+                className="form-input"
+                type="password"
+                placeholder="Введите пароль"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                autoComplete={authMode === 'register' ? 'new-password' : 'current-password'}
+              />
+            </div>
+            
+            {authError && <div className="auth-error visible">{authError}</div>}
+            
+            <button type="submit" className="auth-btn" disabled={loading}>
+              {loading ? '...' : authMode === 'login' ? 'Войти' : 'Зарегистрироваться'}
+            </button>
           </form>
-          <div className="notice">{authError}</div>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="app-layout">
-      <aside className="sidebar">
+    <div className="messenger">
+      {/* Sidebar */}
+      <div className="sidebar">
         <div className="sidebar-header">
-          <div>
-            <span className="eyebrow">Мессенджер</span>
-            <h2>Чаты</h2>
+          <div className="user-avatar-small" onClick={() => setShowProfile(!showProfile)}>
+            {currentUser.username.charAt(0).toUpperCase()}
           </div>
-          <button className="theme-toggle" onClick={() => setTheme((prev) => (prev === 'light' ? 'dark' : 'light'))}>
-            {theme === 'light' ? '🌙' : '☀️'}
-          </button>
-        </div>
-
-        <div className="user-card">
-          <div className="avatar-large">
-            {currentUser.avatar ? <img src={currentUser.avatar} alt={currentUser.username} className="avatar-image" /> : currentUser.username.charAt(0).toUpperCase()}
+          <div className="user-info">
+            <h3>{currentUser.username}</h3>
+            <span>Онлайн</span>
           </div>
-          <div>
-            <strong>{currentUser.username}</strong>
-            <small>Активен сейчас</small>
+          <div className="header-actions">
+            <button onClick={() => setShowUsers(!showUsers)} title="Пользователи">👥</button>
+            <button onClick={handleLogout} title="Выйти">🚪</button>
           </div>
-          <button className="profile-mini-btn" type="button" onClick={() => {
-            setProfileForm({
-              username: currentUser.username || '',
-              avatar: currentUser.avatar || '',
-              gallery: currentUser.gallery || []
-            });
-            setProfileOpen(true);
-          }}>
-            Профиль
-          </button>
         </div>
-
-        <div className="toolbar-box">
-          <input value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} type="text" placeholder="Поиск чатов" className="search-input" />
-          <button className="primary-btn" onClick={createGroupChat}>+ Новый чат</button>
+        
+        <div className="search-box">
+          <div className="search-wrapper">
+            <span className="search-icon">🔍</span>
+            <input
+              className="search-input"
+              type="text"
+              placeholder="Поиск чатов..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+            />
+          </div>
         </div>
-
+        
         <div className="chat-list">
-          {filteredChats.length ? filteredChats.map((chat) => {
-            const chatMessages = chat.messages || messagesMap[chat.id] || [];
-            return (
-              <button key={chat.id} className={`chat-item ${String(chat.id) === String(activeChatId) ? 'active' : ''}`} onClick={() => setActiveChatId(String(chat.id))}>
-                <div className="chat-item-main">
-                  <div className="chat-name">
-                    {getChatTitle(chat)}
-                    {chat.type === 'direct' && <span className="direct-badge">DM</span>}
-                  </div>
-                  <div className="chat-preview">{getChatPreview({ ...chat, messages: chatMessages })}</div>
+          {filteredChats.length === 0 ? (
+            <div className="empty-chat">
+              <div className="empty-icon">💬</div>
+              <h3>Нет чатов</h3>
+              <p>Нажмите на пользователя, чтобы начать общение</p>
+            </div>
+          ) : (
+            filteredChats.map(chat => (
+              <div
+                key={chat.id}
+                className={`chat-item ${activeChat?.id === chat.id ? 'active' : ''}`}
+                onClick={() => { setActiveChat(chat); setTypingUsers({}); }}
+              >
+                <Avatar 
+                  username={chat.otherUser?.username || 'User'} 
+                  online={chat.otherUser?.online}
+                />
+                <div className="chat-info">
+                  <h4>{chat.otherUser?.username || 'Пользователь'}</h4>
+                  <p>{chat.lastMessage?.text || 'Нет сообщений'}</p>
                 </div>
                 <div className="chat-meta">
-                  <span>{chatMessages.length}</span>
-                  {chatMessages.length ? <small>{formatChatStamp(chatMessages[chatMessages.length - 1]?.timestamp || Date.now())}</small> : <small>Пусто</small>}
+                  <span className="time">{formatChatTime(chat.lastMessage?.ts)}</span>
                 </div>
-              </button>
-            );
-          }) : <div className="empty-state compact">Чатов не найдено</div>}
+              </div>
+            ))
+          )}
         </div>
-
-        <div className="users-panel">
-          <div className="panel-title">Пользователи</div>
-          <input value={userSearchQuery} onChange={(e) => setUserSearchQuery(e.target.value)} type="text" placeholder="Поиск пользователей" className="search-input small" />
-          {visibleUsers.map((user) => (
-            <div key={user.id} className={`user-row ${selectedParticipants.includes(user.id) ? 'selected' : ''}`}>
-              <span className="presence-wrap">
-                <span className="mini-avatar">
-                  {user.avatar ? <img src={user.avatar} alt={user.username} className="avatar-image small" /> : user.username.charAt(0).toUpperCase()}
-                </span>
-                <span className={`online-indicator ${user.online ? 'online' : 'offline'}`} />
+      </div>
+      
+      {/* Chat Area */}
+      {activeChat ? (
+        <div className="chat-area">
+          <div className="chat-header">
+            <Avatar 
+              username={activeChat.otherUser?.username || 'User'} 
+              online={activeChat.otherUser?.online}
+              size={42}
+            />
+            <div className="chat-details">
+              <h3>{activeChat.otherUser?.username}</h3>
+              <span className={!activeChat.otherUser?.online ? 'offline' : ''}>
+                {activeChat.otherUser?.online ? 'Онлайн' : 'Был(а) недавно'}
               </span>
-              <span className="user-name-block">
-                <span>{user.username}</span>
-                <small>{getPresenceText(user)}</small>
-              </span>
-              <div className="user-actions">
-                <button className="user-action-btn" type="button" onClick={() => toggleParticipant(user.id)}>{selectedParticipants.includes(user.id) ? '—' : '+'}</button>
-                <button className="user-action-btn" type="button" onClick={() => createDirectChat(user.id)}>Написать</button>
-              </div>
             </div>
-          ))}
-        </div>
-
-        <button className="secondary-btn logout-btn" onClick={handleLogout}>Выйти</button>
-      </aside>
-
-      <main className="content">
-        {activeChat ? (
-          <>
-            <div className="chat-topbar">
-              <div>
-                <h3>{getChatTitle(activeChat)}</h3>
-                <small>{(messagesMap[activeChat.id] || []).length} сообщений</small>
-              </div>
-              <div className="toolbar-group">
-                {activeChat.type !== 'direct' && (
-                  <button className="secondary-btn" type="button" onClick={createGroupChat}>Создать групповой</button>
-                )}
-              </div>
-            </div>
-
-            <div className="messages">
-              {(messagesMap[activeChat.id] || []).length ? (messagesMap[activeChat.id] || []).map((message) => (
-                <div key={message.id} className={`message ${message.from === currentUser.username ? 'mine' : ''} ${message.from === 'system' ? 'system-message' : ''}`}>
-                  <div className="message-header">
-                    <span>{message.from || message.senderName || 'Система'}</span>
-                    <span>{formatTime(message.ts || message.timestamp || Date.now())}</span>
-                  </div>
-                  <div className="message-text">
-                    {message.text || 'Файл'}
-                    {message.attachment && <a href={message.attachment} target="_blank" rel="noreferrer" className="attachment-link">Открыть файл</a>}
-                  </div>
-                  {message.from === currentUser.username && (
-                    <div className="message-actions">
-                      <button type="button" onClick={() => handleEditMessage(message.id)}>Редакт.</button>
-                      <button type="button" onClick={() => handleDeleteMessage(message.id)}>Удалить</button>
-                    </div>
-                  )}
-                </div>
-              )) : <div className="empty-state">Пока нет сообщений в этом чате</div>}
-              <div ref={bottomRef} />
-            </div>
-
-            <div className="emoji-row">
-              {['😊', '👍', '🎉', '🔥', '✅', '🚀'].map((emoji) => (
-                <button key={emoji} type="button" className="emoji-btn" onClick={() => {
-                  const input = document.querySelector('input[name="message"]');
-                  if (!input) return;
-                  const start = input.selectionStart ?? input.value.length;
-                  const end = input.selectionEnd ?? input.value.length;
-                  const value = input.value.slice(0, start) + emoji + input.value.slice(end);
-                  input.value = value;
-                  input.focus();
-                  input.setSelectionRange(start + emoji.length, start + emoji.length);
-                }}>{emoji}</button>
-              ))}
-            </div>
-
-            <form onSubmit={handleSendMessage} className="composer">
-              <input name="message" type="text" placeholder="Напишите сообщение..." autoComplete="off" />
-              <input name="attachment" type="file" className="file-attach" />
-              <button type="submit" className="primary-btn">Отправить</button>
-            </form>
-          </>
-        ) : (
-          <div className="empty-state large">Создайте чат, чтобы начать общение</div>
-        )}
-      </main>
-
-      {profileOpen && (
-        <div className="profile-modal-backdrop" onClick={() => setProfileOpen(false)}>
-          <div className="profile-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="profile-header">
-              <h3>Редактирование профиля</h3>
-              <button className="close-btn" type="button" onClick={() => setProfileOpen(false)}>✕</button>
-            </div>
-
-            <div className="profile-form">
-              <label>
-                <span>Имя пользователя</span>
-                <input value={profileForm.username} onChange={(e) => setProfileForm((prev) => ({ ...prev, username: e.target.value }))} />
-              </label>
-
-              <label>
-                <span>Аватар</span>
-                <input type="file" accept="image/*" onChange={async (e) => {
-                  const file = e.target.files?.[0];
-                  if (!file) return;
-                  const imageUrl = await uploadFile(file);
-                  if (imageUrl) setProfileForm((prev) => ({ ...prev, avatar: imageUrl }));
-                }} />
-              </label>
-
-              {profileForm.avatar && (
-                <img src={profileForm.avatar} alt="avatar preview" className="profile-avatar-preview" />
-              )}
-
-              <label>
-                <span>Галерея</span>
-                <input type="file" accept="image/*" onChange={async (e) => { const file = e.target.files?.[0]; if (file) await addGalleryImage(file); e.target.value = ''; }} />
-              </label>
-
-              {profileForm.gallery?.length ? (
-                <div className="gallery-grid">
-                  {profileForm.gallery.map((img, index) => (
-                    <div key={`${img}-${index}`} className="gallery-item">
-                      <img src={img} alt={`gallery-${index}`} />
-                      <button type="button" onClick={() => setProfileForm((prev) => ({ ...prev, gallery: prev.gallery.filter((item) => item !== img) }))}>Удалить</button>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="empty-gallery">Нет изображений в галерее</div>
-              )}
-
-              <div className="profile-actions">
-                <button type="button" className="secondary-btn" onClick={() => setProfileOpen(false)}>Отмена</button>
-                <button type="button" className="primary-btn" onClick={saveProfile}>Сохранить</button>
-              </div>
+            <div className="header-actions">
+              <button onClick={() => setShowProfile(!showProfile)} title="Профиль">ℹ️</button>
             </div>
           </div>
+          
+          <div className="messages-container">
+            {messages.map(msg => (
+              <div
+                key={msg.id}
+                className={`message ${msg.from === currentUser.username ? 'own' : 'other'}`}
+              >
+                {msg.from !== currentUser.username && (
+                  <div className="msg-from">{msg.from}</div>
+                )}
+                <div>{msg.text}</div>
+                <div className="msg-time">{formatTime(msg.ts)}</div>
+              </div>
+            ))}
+            {typingIndicator}
+            <div ref={messagesEndRef} />
+          </div>
+          
+          <div className="message-input-area">
+            <form onSubmit={sendMessage} className="message-input-wrapper">
+              <textarea
+                className="message-input"
+                placeholder="Напишите сообщение..."
+                value={messageInput}
+                onChange={handleTyping}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    sendMessage(e);
+                  }
+                }}
+                rows={1}
+                ref={messageInputRef}
+              />
+              <button type="submit" className="send-btn" disabled={!messageInput.trim()}>
+                ➤
+              </button>
+            </form>
+          </div>
+        </div>
+      ) : (
+        <div className="empty-chat">
+          <div className="empty-icon">💬</div>
+          <h3>Выберите чат</h3>
+          <p>или начните новый, кликнув на пользователя</p>
+        </div>
+      )}
+      
+      {/* Users Panel */}
+      {showUsers && (
+        <div className="users-panel">
+          <div className="users-panel-header">
+            <h3>Пользователи</h3>
+            <input
+              className="search-input"
+              type="text"
+              placeholder="Поиск..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+            />
+          </div>
+          <div className="users-list">
+            {filteredUsers.map(user => (
+              <div
+                key={user.id}
+                className="user-item"
+                onClick={() => startChat(user.id)}
+              >
+                <Avatar username={user.username} online={user.online} />
+                <div className="user-info">
+                  <h4>{user.username}</h4>
+                  <span className={user.online ? 'online' : 'offline'}>
+                    {user.online ? 'Онлайн' : 'Оффлайн'}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      
+      {/* Profile Panel */}
+      {showProfile && (
+        <div className="profile-panel">
+          <Avatar username={currentUser.username} online={true} size={96} />
+          <div className="profile-name">{currentUser.username}</div>
+          <div className="profile-status">Онлайн</div>
+          
+          <div className="profile-section">
+            <h4>Информация</h4>
+            <p>Вы вошли в систему</p>
+          </div>
+          
+          <button className="profile-btn primary" onClick={() => setShowProfile(false)}>
+            Закрыть
+          </button>
+          <button className="profile-btn danger" onClick={handleLogout}>
+            Выйти из аккаунта
+          </button>
+        </div>
+      )}
+      
+      {/* Toast */}
+      {toast && (
+        <div className={`toast ${toast.type}`}>
+          {toast.message}
         </div>
       )}
     </div>
   );
 }
-
-export default App;

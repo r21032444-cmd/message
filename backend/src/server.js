@@ -5,221 +5,295 @@ import cors from 'cors';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import * as db from './db.js';
-import multer from 'multer';
 import path from 'path';
-import fs from 'fs';
 import { fileURLToPath } from 'url';
+import fs from 'fs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const frontendDist = path.join(__dirname, '../../frontend/dist');
 
-const JWT_SECRET = process.env.JWT_SECRET || 'clock_secret';
+const JWT_SECRET = process.env.JWT_SECRET || 'clock_secret_key_2024';
 
 const app = express();
-app.use(cors());
+app.use(cors({ origin: '*' }));
 app.use(express.json({ limit: '10mb' }));
-
-// Serve frontend static files (native JS Clock Messenger from project root)
-const projectRoot = path.join(__dirname, '../..');
-console.log('Project root:', projectRoot, 'exists:', fs.existsSync(projectRoot));
-app.use(express.static(projectRoot));
-
-// serve uploads
-const uploadDir = path.join(__dirname, '../uploads');
-fs.mkdirSync(uploadDir, { recursive: true });
-app.use('/uploads', express.static(uploadDir));
-const upload = multer({ dest: uploadDir });
 
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: '*' } });
 
+// Serve frontend static files
+if (fs.existsSync(frontendDist)) {
+  app.use(express.static(frontendDist));
+  console.log('Frontend served from:', frontendDist);
+} else {
+  console.log('Frontend dist not found. Run `npm run build` in frontend/');
+}
+
+// --- Middleware ---
 function authMiddleware(req, res, next) {
   const h = req.headers.authorization;
-  if (!h) return res.status(401).send('Unauthorized');
+  if (!h) return res.status(401).json({ error: 'Unauthorized' });
   const parts = h.split(' ');
-  if (parts.length !== 2) return res.status(401).send('Unauthorized');
+  if (parts.length !== 2) return res.status(401).json({ error: 'Unauthorized' });
   const token = parts[1];
   try {
     req.user = jwt.verify(token, JWT_SECRET);
     next();
-  } catch (e) { return res.status(401).send('Unauthorized'); }
+  } catch (e) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
 }
 
-app.get('/health', (req, res) => res.json({ ok: true }));
-
-app.get('/me', authMiddleware, (req, res) => {
-  const user = db.getUserById(req.user.id);
-  if (!user) return res.status(404).send('User not found');
-  res.json(user);
-});
-
-// Auth
+// --- Auth Routes ---
 app.post('/auth/register', async (req, res) => {
-  const { username, password, avatar, gallery } = req.body;
-  if (!username || !password) return res.status(400).send('Missing');
-  const existing = db.getUserByUsername(username);
-  if (existing) return res.status(400).send('User exists');
-  const hashed = await bcrypt.hash(password, 10);
-  const user = db.createUser(username, hashed, avatar || null, Array.isArray(gallery) ? gallery : []);
-  const token = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET);
-  res.json({ user, token });
+  try {
+    const { username, password } = req.body;
+    if (!username || !password) return res.status(400).json({ error: 'Missing username or password' });
+    if (username.length < 2) return res.status(400).json({ error: 'Username too short' });
+    if (password.length < 3) return res.status(400).json({ error: 'Password too short' });
+    
+    const existing = db.getUserByUsername(username.trim().toLowerCase());
+    if (existing) return res.status(400).json({ error: 'User already exists' });
+
+    const hashed = await bcrypt.hash(password, 10);
+    const user = db.createUser(username.trim().toLowerCase(), hashed);
+    const token = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET);
+    
+    res.json({
+      user: { id: user.id, username: user.username, avatar: user.avatar, online: true },
+      token
+    });
+  } catch (e) {
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
 app.post('/auth/login', async (req, res) => {
-  const { username, password } = req.body;
-  const user = db.getUserByUsername(username);
-  if (!user) return res.status(400).send('Invalid');
-  const ok = await bcrypt.compare(password, user.password);
-  if (!ok) return res.status(400).send('Invalid');
-  const token = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET);
-  res.json({ user, token });
+  try {
+    const { username, password } = req.body;
+    if (!username || !password) return res.status(400).json({ error: 'Missing credentials' });
+    
+    const user = db.getUserByUsername(username.trim().toLowerCase());
+    if (!user) return res.status(400).json({ error: 'Invalid credentials' });
+    
+    const ok = await bcrypt.compare(password, user.password);
+    if (!ok) return res.status(400).json({ error: 'Invalid credentials' });
+    
+    db.setUserOnline(user.id, true);
+    const token = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET);
+    
+    res.json({
+      user: { id: user.id, username: user.username, avatar: user.avatar, online: true },
+      token
+    });
+  } catch (e) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// --- User Routes ---
+app.get('/users/me', authMiddleware, (req, res) => {
+  const user = db.getUserById(req.user.id);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  res.json({ id: user.id, username: user.username, avatar: user.avatar, online: user.online });
 });
 
 app.put('/users/me', authMiddleware, (req, res) => {
-  const { username, avatar, gallery } = req.body;
+  const { avatar } = req.body;
   const updates = {};
-  if (username && username.trim()) updates.username = username.trim();
-  if (avatar !== undefined) updates.avatar = avatar || null;
-  if (gallery !== undefined) updates.gallery = Array.isArray(gallery) ? gallery : [];
-
+  if (avatar !== undefined) updates.avatar = avatar;
   const user = db.updateUser(req.user.id, updates);
-  if (!user) return res.status(404).send('User not found');
-  res.json(user);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  res.json({ id: user.id, username: user.username, avatar: user.avatar, online: user.online });
 });
 
 app.get('/users', authMiddleware, (req, res) => {
   const search = String(req.query.search || '').trim().toLowerCase();
-  const users = db.getUsers().filter((user) => Number(user.id) !== Number(req.user.id));
-  if (!search) return res.json(users);
-  res.json(users.filter((user) => user.username.toLowerCase().includes(search)));
+  let users = db.getUsers().filter(u => Number(u.id) !== Number(req.user.id));
+  
+  if (search) {
+    users = users.filter(u => u.username.toLowerCase().includes(search));
+  }
+  
+  res.json(users.map(u => ({
+    id: u.id,
+    username: u.username,
+    avatar: u.avatar,
+    online: u.online,
+    lastSeen: u.lastSeen
+  })));
 });
 
-// file upload
-app.post('/upload', upload.single('file'), (req, res) => {
-  if (!req.file) return res.status(400).send('No file');
-  // return accessible URL
-  const protocol = req.get('X-Forwarded-Proto') || req.protocol;
-  const url = `${protocol}://${req.get('host')}/uploads/${req.file.filename}`;
-  res.json({ url, mime: req.file.mimetype, filename: req.file.originalname });
+app.get('/users/:id', authMiddleware, (req, res) => {
+  const user = db.getUserById(req.params.id);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  res.json({
+    id: user.id,
+    username: user.username,
+    avatar: user.avatar,
+    online: user.online,
+    lastSeen: user.lastSeen
+  });
 });
 
-// Chats
+// --- Chat Routes (Private 1-on-1) ---
 app.get('/chats', authMiddleware, (req, res) => {
-  const list = db.getChatsByUser(req.user.id);
-  res.json(list);
+  const chats = db.getChatsByUser(req.user.id);
+  const result = chats.map(chat => {
+    const msgs = db.getMessages(chat.id).sort((a, b) => b.ts - a.ts);
+    const lastMsg = msgs[0] || null;
+    
+    // Find the other participant
+    const otherId = chat.participants.find(p => Number(p) !== Number(req.user.id));
+    const otherUser = otherId ? db.getUserById(otherId) : null;
+    
+    return {
+      id: chat.id,
+      type: chat.type,
+      participants: chat.participants,
+      lastMessage: lastMsg ? {
+        text: lastMsg.text,
+        from: lastMsg.from,
+        ts: lastMsg.ts
+      } : null,
+      otherUser: otherUser ? {
+        id: otherUser.id,
+        username: otherUser.username,
+        avatar: otherUser.avatar,
+        online: otherUser.online
+      } : null
+    };
+  });
+  
+  result.sort((a, b) => {
+    const aTime = a.lastMessage ? a.lastMessage.ts : 0;
+    const bTime = b.lastMessage ? b.lastMessage.ts : 0;
+    return bTime - aTime;
+  });
+  
+  res.json(result);
 });
 
-app.post('/chats', authMiddleware, (req, res) => {
-  const { name, type = 'group', participants = [] } = req.body;
-  const safeParticipants = Array.from(new Set([
-    Number(req.user.id),
-    ...participants.map(item => Number(item))
-  ].filter(Boolean)));
-
-  const chat = db.createChat(name || 'Chat', type || 'group', safeParticipants);
-  res.json(chat);
+// Create or get private chat between two users
+app.post('/chats/private', authMiddleware, (req, res) => {
+  try {
+    const { userId } = req.body;
+    if (!userId) return res.status(400).json({ error: 'Missing userId' });
+    
+    const chat = db.getOrCreatePrivateChat(req.user.id, Number(userId));
+    if (!chat) return res.status(400).json({ error: 'Cannot create chat with yourself' });
+    
+    const msgs = db.getMessages(chat.id).sort((a, b) => a.ts - b.ts);
+    const otherId = chat.participants.find(p => Number(p) !== Number(req.user.id));
+    const otherUser = otherId ? db.getUserById(otherId) : null;
+    
+    res.json({
+      id: chat.id,
+      type: chat.type,
+      participants: chat.participants,
+      messages: msgs,
+      otherUser: otherUser ? {
+        id: otherUser.id,
+        username: otherUser.username,
+        avatar: otherUser.avatar,
+        online: otherUser.online
+      } : null
+    });
+  } catch (e) {
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
+// Get messages for a chat
 app.get('/chats/:id/messages', authMiddleware, (req, res) => {
-  const id = req.params.id;
-  const chat = db.getChatById(id);
-  if (!chat) return res.status(404).send('Chat not found');
-  const msgs = db.getMessages(id);
+  const chat = db.getChatById(req.params.id);
+  if (!chat) return res.status(404).json({ error: 'Chat not found' });
+  
+  const msgs = db.getMessages(chat.id).sort((a, b) => a.ts - b.ts);
   res.json(msgs);
 });
 
+// Send message
 app.post('/chats/:id/messages', authMiddleware, (req, res) => {
-  const id = req.params.id;
-  const { text, attachment, mime } = req.body;
-  const from = req.user.username;
-  const msg = db.createMessage(id, from, text || '', attachment || null, mime || null);
-  io.to(String(id)).emit('message', { chatId: String(id), message: msg });
+  const { id } = req.params;
+  const { text } = req.body;
+  if (!text && !req.body.attachment) return res.status(400).json({ error: 'Missing message' });
+  
+  const msg = db.createMessage(id, req.user.username, text || '', null, null);
+  io.to(`chat:${id}`).emit('message', { chatId: String(id), message: msg });
+  
   res.json(msg);
 });
 
-app.put('/chats/:id/messages/:mid', authMiddleware, (req, res) => {
-  const { mid } = req.params;
-  const { text } = req.body;
-  const m = db.editMessage(mid, text);
-  if (!m) return res.status(404).send('Message not found');
-  io.to(String(m.chatId)).emit('edit', { chatId: String(m.chatId), message: m });
-  res.json(m);
-});
-
-app.delete('/chats/:id/messages/:mid', authMiddleware, (req, res) => {
-  const { id, mid } = req.params;
-  db.deleteMessage(mid);
-  io.to(String(id)).emit('delete', { chatId: String(id), messageId: mid });
-  res.json({ ok: true });
-});
-
-// mark chat read via API
-app.post('/chats/:id/read', authMiddleware, (req, res) => {
-  const { id } = req.params;
-  db.markChatReadByUser(id, req.user.username);
-  io.to(String(id)).emit('read', { chatId: String(id), by: req.user.username });
-  res.json({ ok: true });
-});
-
-// Socket.IO auth via token in handshake.auth
+// --- Socket.IO ---
 io.use((socket, next) => {
   const token = socket.handshake.auth && socket.handshake.auth.token;
   if (!token) return next(new Error('Unauthorized'));
   try {
     socket.user = jwt.verify(token, JWT_SECRET);
     next();
-  } catch (e) { next(new Error('Unauthorized')); }
+  } catch (e) {
+    next(new Error('Unauthorized'));
+  }
 });
+
+// Track online users
+const onlineUsers = new Map();
 
 io.on('connection', (socket) => {
-  socket.on('join', ({ chatId }) => {
-    socket.join(String(chatId));
+  const userId = socket.user.id;
+  
+  // Mark user online
+  db.setUserOnline(userId, true);
+  onlineUsers.set(userId, socket.id);
+  
+  // Notify all clients about online status change
+  io.emit('user:online', { userId, online: true });
+  
+  // Join private chat rooms
+  socket.on('join:private', ({ chatId }) => {
+    socket.join(`chat:${chatId}`);
   });
-
-  socket.on('leave', ({ chatId }) => {
-    socket.leave(String(chatId));
+  
+  // Send message via socket
+  socket.on('message:send', ({ chatId, text }) => {
+    const msg = db.createMessage(chatId, socket.user.username, text || '', null, null);
+    io.to(`chat:${chatId}`).emit('message', { chatId: String(chatId), message: msg });
   });
-
-  socket.on('send', ({ chatId, message }) => {
-    const from = socket.user.username;
-    const msg = db.createMessage(chatId, from, message.text || '', message.attachment || null, message.mime || null);
-    io.to(String(chatId)).emit('message', { chatId: String(chatId), message: msg });
+  
+  // Typing indicator
+  socket.on('typing:start', ({ chatId }) => {
+    io.to(`chat:${chatId}`).emit('typing', { chatId, username: socket.user.username, typing: true });
   });
-
-  socket.on('edit', ({ chatId, mid, text }) => {
-    const m = db.editMessage(mid, text);
-    io.to(String(chatId)).emit('edit', { chatId: String(chatId), message: m });
+  
+  socket.on('typing:stop', ({ chatId }) => {
+    io.to(`chat:${chatId}`).emit('typing', { chatId, username: socket.user.username, typing: false });
   });
-
-  socket.on('delete', ({ chatId, mid }) => {
-    db.deleteMessage(mid);
-    io.to(String(chatId)).emit('delete', { chatId: String(chatId), messageId: mid });
-  });
-
-  socket.on('delivered', ({ chatId, messageIds }) => {
-    if (Array.isArray(messageIds)) {
-      messageIds.forEach(mid => db.markMessageDelivered(mid));
-      io.to(String(chatId)).emit('delivered', { chatId: String(chatId), messageIds });
-    }
-  });
-
-  socket.on('read', ({ chatId, messageIds }) => {
-    if (Array.isArray(messageIds)) {
-      messageIds.forEach(mid => db.markMessageRead(mid));
-      io.to(String(chatId)).emit('read', { chatId: String(chatId), messageIds, by: socket.user.username });
-    }
+  
+  // Disconnect
+  socket.on('disconnect', () => {
+    db.setUserOnline(userId, false);
+    onlineUsers.delete(userId);
+    io.emit('user:offline', { userId });
   });
 });
 
-// Serve index.html for all unmatched routes (SPA fallback)
+// SPA fallback - serve index.html for all non-API routes
 app.get('*', (req, res) => {
-  const indexPath = path.join(projectRoot, 'index.html');
-  if (fs.existsSync(indexPath)) {
-    res.sendFile(indexPath);
+  if (!req.path.startsWith('/api') && !req.path.startsWith('/auth') && !req.path.startsWith('/users') && !req.path.startsWith('/chats') && req.path !== '/health') {
+    const indexPath = path.join(frontendDist, 'index.html');
+    if (fs.existsSync(indexPath)) {
+      res.sendFile(indexPath);
+    } else {
+      res.status(404).send('Frontend not built');
+    }
   } else {
-    res.status(404).send('Frontend not found');
+    res.status(404).json({ error: 'Not found' });
   }
 });
 
 const PORT = process.env.PORT || 3001;
-server.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
+server.listen(PORT, () => {
+  console.log(`Messenger server running on http://localhost:${PORT}`);
+});

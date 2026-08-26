@@ -236,3 +236,58 @@ export function markChatReadByUser(chatId, username) {
   });
   saveState(state);
 }
+
+export function setUserOnline(userId, online) {
+  const state = readState();
+  const user = state.users.find(item => Number(item.id) === Number(userId));
+  if (user) {
+    user.online = Boolean(online);
+    if (online) {
+      user.lastSeen = Date.now();
+    } else {
+      user.lastSeen = Date.now();
+    }
+    saveState(state);
+  }
+}
+
+export function getOrCreatePrivateChat(userId1, userId2) {
+  if (Number(userId1) === Number(userId2)) return null;
+  
+  const state = readState();
+  
+  // Check if a private chat already exists between these two users
+  const existingChat = state.chats.find(chat => {
+    if (chat.type !== 'private') return false;
+    const ids = (chat.participants || []).map(Number);
+    return ids.length === 2 && ids.includes(Number(userId1)) && ids.includes(Number(userId2));
+  });
+  
+  if (existingChat) {
+    return normalizeChat(existingChat);
+  }
+  
+  // Create new private chat
+  const chat = {
+    id: getNextId(state.chats),
+    name: '',
+    type: 'private',
+    participants: [Number(userId1), Number(userId2)],
+    created_at: Date.now()
+  };
+  
+  state.chats.push(chat);
+  saveState(state);
+  return normalizeChat(chat);
+}
+
+function normalizeChat(chat) {
+  if (!chat) return null;
+  return {
+    id: Number(chat.id),
+    name: chat.name || '',
+    type: chat.type || 'private',
+    participants: (chat.participants || []).map(Number),
+    created_at: Number(chat.created_at || Date.now())
+  };
+}
