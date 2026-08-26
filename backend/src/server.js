@@ -30,6 +30,9 @@ if (fs.existsSync(frontendDist)) {
   console.log('Frontend dist not found. Run `npm run build` in frontend/');
 }
 
+// Health check (public)
+app.get('/health', (req, res) => res.json({ ok: true }));
+
 // --- Middleware ---
 function authMiddleware(req, res, next) {
   const h = req.headers.authorization;
@@ -214,11 +217,18 @@ app.get('/chats/:id/messages', authMiddleware, (req, res) => {
   res.json(msgs);
 });
 
-// Send message
+// Send message via REST API (fallback)
 app.post('/chats/:id/messages', authMiddleware, (req, res) => {
   const { id } = req.params;
   const { text } = req.body;
   if (!text && !req.body.attachment) return res.status(400).json({ error: 'Missing message' });
+  
+  // Validate chat exists and user is participant
+  const chat = db.getChatById(id);
+  if (!chat) return res.status(404).json({ error: 'Chat not found' });
+  if (!chat.participants.includes(Number(req.user.id))) {
+    return res.status(403).json({ error: 'Not a participant' });
+  }
   
   const msg = db.createMessage(id, req.user.username, text || '', null, null);
   io.to(`chat:${id}`).emit('message', { chatId: String(id), message: msg });
@@ -243,36 +253,72 @@ const onlineUsers = new Map();
 
 io.on('connection', (socket) => {
   const userId = socket.user.id;
+  const username = socket.user.username;
+  
+  console.log(`User connected: ${username} (ID: ${userId})`);
   
   // Mark user online
   db.setUserOnline(userId, true);
   onlineUsers.set(userId, socket.id);
   
+  // Get user's chats and join them automatically
+  const userChats = db.getChatsByUser(userId);
+  userChats.forEach(chat => {
+    socket.join(`chat:${chat.id}`);
+  });
+  
   // Notify all clients about online status change
   io.emit('user:online', { userId, online: true });
   
-  // Join private chat rooms
+  // Join private chat room
   socket.on('join:private', ({ chatId }) => {
-    socket.join(`chat:${chatId}`);
+    // Verify user is a participant
+    const chat = db.getChatById(chatId);
+    if (chat && chat.participants.includes(Number(userId))) {
+      socket.join(`chat:${chatId}`);
+    }
   });
   
-  // Send message via socket
+  // Send message via socket (real-time)
   socket.on('message:send', ({ chatId, text }) => {
-    const msg = db.createMessage(chatId, socket.user.username, text || '', null, null);
+    // Validate
+    if (!text || text.trim().length === 0) {
+      socket.emit('error', { message: 'Message cannot be empty' });
+      return;
+    }
+    if (text.length > 5000) {
+      socket.emit('error', { message: 'Message too long (max 5000 chars)' });
+      return;
+    }
+    
+    // Verify chat exists and user is participant
+    const chat = db.getChatById(chatId);
+    if (!chat) {
+      socket.emit('error', { message: 'Chat not found' });
+      return;
+    }
+    if (!chat.participants.includes(Number(userId))) {
+      socket.emit('error', { message: 'Not a participant' });
+      return;
+    }
+    
+    // Create and broadcast message
+    const msg = db.createMessage(chatId, username, text.trim(), null, null);
     io.to(`chat:${chatId}`).emit('message', { chatId: String(chatId), message: msg });
   });
   
   // Typing indicator
   socket.on('typing:start', ({ chatId }) => {
-    io.to(`chat:${chatId}`).emit('typing', { chatId, username: socket.user.username, typing: true });
+    io.to(`chat:${chatId}`).emit('typing', { chatId, username, typing: true });
   });
   
   socket.on('typing:stop', ({ chatId }) => {
-    io.to(`chat:${chatId}`).emit('typing', { chatId, username: socket.user.username, typing: false });
+    io.to(`chat:${chatId}`).emit('typing', { chatId, username, typing: false });
   });
   
   // Disconnect
   socket.on('disconnect', () => {
+    console.log(`User disconnected: ${username} (ID: ${userId})`);
     db.setUserOnline(userId, false);
     onlineUsers.delete(userId);
     io.emit('user:offline', { userId });
