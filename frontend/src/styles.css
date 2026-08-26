@@ -115,6 +115,29 @@ input { font-family: inherit; border: none; outline: none; }
   display: flex; align-items: center; justify-content: center;
   font-weight: 700; font-size: 16px; color: white; cursor: pointer;
 }
+.user-info {
+  flex: 1;
+}
+.user-info h3 {
+  font-size: 15px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.version-badge {
+  font-size: 10px;
+  background: var(--accent);
+  color: white;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+.user-info span {
+  font-size: 12px;
+  color: var(--green);
+}
 .search-box { padding: 12px 20px; }
 .search-input {
   width: 100%; background: var(--bg-primary); border: 1px solid var(--border);

@@ -443,7 +443,10 @@ export default function App() {
             {currentUser.username.charAt(0).toUpperCase()}
           </div>
           <div className="user-info">
-            <h3>{currentUser.username}</h3>
+            <h3>
+              Клок 
+              <span className="version-badge">V1</span>
+            </h3>
             <span>Онлайн</span>
           </div>
           <div className="header-actions">
