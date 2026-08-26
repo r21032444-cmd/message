@@ -80,7 +80,9 @@ function App() {
   const [profileOpen, setProfileOpen] = useState(false);
   const [profileForm, setProfileForm] = useState({ username: '', avatar: '', gallery: [] });
   const [loading, setLoading] = useState(false);
+  const [showSidebar, setShowSidebar] = useState(true);
   const bottomRef = useRef(null);
+  const messageInputRef = useRef(null);
 
   const activeChat = useMemo(() => {
     if (!activeChatId) return null;
