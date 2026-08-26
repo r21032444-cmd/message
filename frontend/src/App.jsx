@@ -5,6 +5,18 @@ const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 const TOKEN_KEY = 'messenger_token';
 const USER_KEY = 'messenger_user';
 
+// SVG Icons
+const Icons = {
+  search: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>,
+  users: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>,
+  logout: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/></svg>,
+  info: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>,
+  send: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>,
+  close: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>,
+  chat: <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>,
+  profile: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+};
+
 function apiFetch(path, options = {}, token = '') {
   const headers = { ...(options.headers || {}) };
   headers['Content-Type'] = headers['Content-Type'] || 'application/json';
@@ -183,7 +195,13 @@ export default function App() {
           apiFetch('/users', {}, token),
           apiFetch('/chats', {}, token)
         ]);
-        setUsers(usersData || []);
+        
+        // Фильтруем только реальных пользователей (без ботов)
+        const realUsers = (usersData || []).filter(u => 
+          u.username && !u.username.includes('-bot') && !u.username.includes('test')
+        );
+        
+        setUsers(realUsers);
         setChats(chatsData || []);
       } catch (error) {
         console.error('Failed to load data:', error);
@@ -339,9 +357,9 @@ export default function App() {
       <div className="auth-container">
         <div className="auth-card">
           <div className="auth-logo">
-            <div className="logo-icon">💬</div>
+            <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="1.5"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
             <h1>Мессенджер</h1>
-            <p>Общайтесь в реальном времени</p>
+            <p>Общайтесь с друзьями</p>
           </div>
           
           <div className="auth-tabs">
@@ -408,14 +426,18 @@ export default function App() {
             <span>Онлайн</span>
           </div>
           <div className="header-actions">
-            <button onClick={() => setShowUsers(!showUsers)} title="Пользователи">👥</button>
-            <button onClick={handleLogout} title="Выйти">🚪</button>
+            <button onClick={() => setShowUsers(!showUsers)} title="Пользователи">
+              {Icons.users}
+            </button>
+            <button onClick={handleLogout} title="Выйти">
+              {Icons.logout}
+            </button>
           </div>
         </div>
         
         <div className="search-box">
           <div className="search-wrapper">
-            <span className="search-icon">🔍</span>
+            <span className="search-icon">{Icons.search}</span>
             <input
               className="search-input"
               type="text"
@@ -429,9 +451,9 @@ export default function App() {
         <div className="chat-list">
           {filteredChats.length === 0 ? (
             <div className="empty-chat">
-              <div className="empty-icon">💬</div>
+              <div className="empty-icon">{Icons.chat}</div>
               <h3>Нет чатов</h3>
-              <p>Нажмите на пользователя, чтобы начать общение</p>
+              <p>Нажмите на пользователя справа, чтобы начать общение</p>
             </div>
           ) : (
             filteredChats.map(chat => (
@@ -473,7 +495,9 @@ export default function App() {
               </span>
             </div>
             <div className="header-actions">
-              <button onClick={() => setShowProfile(!showProfile)} title="Профиль">ℹ️</button>
+              <button onClick={() => setShowProfile(!showProfile)} title="Профиль">
+                {Icons.info}
+              </button>
             </div>
           </div>
           
@@ -511,16 +535,16 @@ export default function App() {
                 ref={messageInputRef}
               />
               <button type="submit" className="send-btn" disabled={!messageInput.trim()}>
-                ➤
+                {Icons.send}
               </button>
             </form>
           </div>
         </div>
       ) : (
         <div className="empty-chat">
-          <div className="empty-icon">💬</div>
+          <div className="empty-icon">{Icons.chat}</div>
           <h3>Выберите чат</h3>
-          <p>или начните новый, кликнув на пользователя</p>
+          <p>или начните новый, кликнув на пользователя справа</p>
         </div>
       )}
       
@@ -538,21 +562,27 @@ export default function App() {
             />
           </div>
           <div className="users-list">
-            {filteredUsers.map(user => (
-              <div
-                key={user.id}
-                className="user-item"
-                onClick={() => startChat(user.id)}
-              >
-                <Avatar username={user.username} online={user.online} />
-                <div className="user-info">
-                  <h4>{user.username}</h4>
-                  <span className={user.online ? 'online' : 'offline'}>
-                    {user.online ? 'Онлайн' : 'Оффлайн'}
-                  </span>
-                </div>
+            {filteredUsers.length === 0 ? (
+              <div style={{padding: '20px', textAlign: 'center', color: 'var(--text-muted)'}}>
+                Нет зарегистрированных пользователей
               </div>
-            ))}
+            ) : (
+              filteredUsers.map(user => (
+                <div
+                  key={user.id}
+                  className="user-item"
+                  onClick={() => startChat(user.id)}
+                >
+                  <Avatar username={user.username} online={user.online} />
+                  <div className="user-info">
+                    <h4>{user.username}</h4>
+                    <span className={user.online ? 'online' : 'offline'}>
+                      {user.online ? 'Онлайн' : 'Оффлайн'}
+                    </span>
+                  </div>
+                </div>
+              ))
+            )}
           </div>
         </div>
       )}

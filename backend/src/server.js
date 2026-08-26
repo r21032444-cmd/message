@@ -33,6 +33,42 @@ if (fs.existsSync(frontendDist)) {
 // Health check (public)
 app.get('/health', (req, res) => res.json({ ok: true }));
 
+// Очистка тестовых данных (только для разработчиков)
+app.post('/admin/clean-test-users', (req, res) => {
+  try {
+    const reservedNames = ['bot', 'test', 'admin', 'system', 'dummy', 'fake'];
+    const state = db.getState();
+    
+    // Удаляем тестовых пользователей
+    state.users = state.users.filter(user => 
+      !reservedNames.some(name => user.username.toLowerCase().includes(name))
+    );
+    
+    // Удаляем чаты с тестовыми пользователями
+    const testUserIds = state.users
+      .filter(u => reservedNames.some(name => u.username.toLowerCase().includes(name)))
+      .map(u => u.id);
+    
+    state.chats = state.chats.filter(chat => 
+      !chat.participants.some(p => testUserIds.includes(p))
+    );
+    
+    // Удаляем сообщения тестовых пользователей
+    const testUsernames = state.users
+      .filter(u => reservedNames.some(name => u.username.toLowerCase().includes(name)))
+      .map(u => u.username);
+    
+    state.messages = state.messages.filter(msg => 
+      !testUsernames.includes(msg.from_user)
+    );
+    
+    db.saveState(state);
+    res.json({ ok: true, message: 'Test users cleaned' });
+  } catch (e) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // --- Middleware ---
 function authMiddleware(req, res, next) {
   const h = req.headers.authorization;
@@ -55,6 +91,12 @@ app.post('/auth/register', async (req, res) => {
     if (!username || !password) return res.status(400).json({ error: 'Missing username or password' });
     if (username.length < 2) return res.status(400).json({ error: 'Username too short' });
     if (password.length < 3) return res.status(400).json({ error: 'Password too short' });
+    
+    // Проверка на зарезервированные имена (боты, тесты)
+    const reservedNames = ['bot', 'test', 'admin', 'system', 'dummy', 'fake'];
+    if (reservedNames.some(name => username.toLowerCase().includes(name))) {
+      return res.status(400).json({ error: 'Это имя запрещено' });
+    }
     
     const existing = db.getUserByUsername(username.trim().toLowerCase());
     if (existing) return res.status(400).json({ error: 'User already exists' });
