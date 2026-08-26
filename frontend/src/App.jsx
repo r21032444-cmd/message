@@ -206,6 +206,15 @@ function App() {
     setSelectedParticipants((prev) => prev.includes(userId) ? prev.filter((id) => id !== userId) : [...prev, userId]);
   };
 
+  function goToChat(chatId) {
+    setActiveChatId(String(chatId));
+    setShowSidebar(false);
+  }
+
+  function goBack() {
+    setShowSidebar(true);
+  }
+
   async function uploadFile(file) {
     if (!file) return null;
     const formData = new FormData();

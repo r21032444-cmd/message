@@ -213,7 +213,7 @@ io.on('connection', (socket) => {
 
 // Serve index.html for all unmatched routes (SPA fallback)
 app.get('*', (req, res) => {
-  const indexPath = path.join(frontendPath, 'index.html');
+  const indexPath = path.join(projectRoot, 'index.html');
   if (fs.existsSync(indexPath)) {
     res.sendFile(indexPath);
   } else {
